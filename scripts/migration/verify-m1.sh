@@ -34,6 +34,7 @@ if [ -f "$PROJECT_ROOT/data/processed/migration-manifest.txt" ]; then
 fi
 
 npm run test:live
+npm run test:charging-live
 
 if [ "$MODE" = "preflight" ]; then
   if compose ps --status running teslamate | grep -q teslamate; then

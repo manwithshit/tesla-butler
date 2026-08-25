@@ -456,8 +456,8 @@ export async function pushVehicleOverviewReviewCard(chatId, key = Date.now()) {
   await sendCard(chatId, buildVehicleOverviewCard(vehicle, stats), `${key}:overview-review`);
 }
 
-export async function sendChargingEvent(chatId, event, key = Date.now()) {
-  await sendCard(chatId, buildChargingStatusCard(event.type, event.snapshot), `${key}:${event.type}`);
+export async function sendChargingEvent(chatId, event, key = Date.now(), options = {}) {
+  await sendCard(chatId, buildChargingStatusCard(event.type, event.snapshot, options), `${key}:${event.type}`);
 }
 
 export async function pushApprovedSimulationCards(chatId, key = Date.now()) {

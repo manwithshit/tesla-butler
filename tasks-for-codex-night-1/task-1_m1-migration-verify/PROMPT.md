@@ -54,6 +54,7 @@ scope:
 - 加密包 SHA-256 校验通过，包内文件校验通过。
 - PostgreSQL 恢复成功，`drives|positions|charging_processes` 与 manifest 完全一致。
 - `npm run test:live` 通过。
+- `npm run test:charging-live` 通过，确认最新充电会话只读查询、结束卡片和旧事件不重放。
 - M1 TeslaMate 未启动，M1 飞书 Worker 未加载；M5 仍是唯一采集和回复端。
 - 未把 `.env`、`data/raw/`、`data/processed/` 或任何凭证加入 Git。
 - 未执行最终切换。最终切换必须等待用户明确确认，并使用新的 `cutover` 包。

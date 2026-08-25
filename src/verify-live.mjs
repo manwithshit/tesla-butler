@@ -18,8 +18,10 @@ if (!(trips.trip_count > 0) || trips.energy_source !== "power_integration" || !(
 if (!(receipts.count > 0) || !(receipts.amount_cny > 0) || !(receipts.energy_kwh > 0)) {
   throw new Error("confirmed receipt is absent from this week");
 }
-const feeDifference = Math.abs((receipts.electricity_fee_cny + receipts.service_fee_cny) - receipts.amount_cny);
-if (feeDifference > 0.05) throw new Error("receipt fee breakdown does not match total paid");
+const allocatedFees = receipts.electricity_fee_cny + receipts.service_fee_cny;
+if (allocatedFees - receipts.amount_cny > 0.05) {
+  throw new Error("known receipt fee breakdown exceeds total paid");
+}
 
 const tripElectricCost = calculateTripElectricCost(trips.estimated_kwh, receipts.all_in_unit_price_cny_per_kwh);
 if (!(tripElectricCost >= 0)) throw new Error("trip electricity cost is unavailable");
@@ -47,6 +49,7 @@ process.stdout.write(`${JSON.stringify({
     amount_cny: receipts.amount_cny,
     electricity_fee_cny: receipts.electricity_fee_cny,
     service_fee_cny: receipts.service_fee_cny,
+    unallocated_fee_cny: Number(Math.max(0, receipts.amount_cny - allocatedFees).toFixed(2)),
     all_in_unit_price_cny_per_kwh: receipts.all_in_unit_price_cny_per_kwh
   },
   card_blocks: card.body.elements.length

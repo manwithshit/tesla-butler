@@ -7,17 +7,48 @@ const composeArgs = [
   "-f", projectPath("infra", "teslamate", "compose.yaml")
 ];
 
-async function sqlJson(sql) {
+async function sqlJson(sql, timeout = 30_000) {
   const { stdout } = await runFile(config.dockerCli, [
     ...composeArgs,
     "exec", "-T", "database",
     "psql", "-X", "-q", "-t", "-A",
     "-U", "teslamate", "-d", "teslamate",
     "-c", sql
-  ], { cwd: config.root, timeout: 30_000 });
+  ], { cwd: config.root, timeout });
 
   const value = stdout.trim();
   return value ? JSON.parse(value) : null;
+}
+
+export async function getLatestChargingProcess() {
+  return sqlJson(`
+    SELECT COALESCE((
+      SELECT json_build_object(
+        'id', cp.id,
+        'car_id', cp.car_id,
+        'start_at', cp.start_date,
+        'end_at', cp.end_date,
+        'start_battery_level', cp.start_battery_level,
+        'end_battery_level', cp.end_battery_level,
+        'charge_energy_added', cp.charge_energy_added,
+        'duration_min', cp.duration_min,
+        'latest_battery_level', latest.battery_level,
+        'latest_charger_power', latest.charger_power,
+        'latest_charge_energy_added', latest.charge_energy_added,
+        'latest_sample_at', latest.date
+      )
+      FROM charging_processes cp
+      LEFT JOIN LATERAL (
+        SELECT c.date, c.battery_level, c.charger_power, c.charge_energy_added
+        FROM charges c
+        WHERE c.charging_process_id = cp.id
+        ORDER BY c.date DESC, c.id DESC
+        LIMIT 1
+      ) latest ON true
+      ORDER BY cp.id DESC
+      LIMIT 1
+    ), 'null'::json);
+  `, 3_000);
 }
 
 export async function ensureTeslaMate() {

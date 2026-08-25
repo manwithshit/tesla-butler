@@ -2,9 +2,10 @@ import { config } from "./config.mjs";
 import { connect } from "mqtt";
 import { handleCardEvent, handleMessageEvent, sendChargingEvent, sendScheduledReport } from "./bot.mjs";
 import { ChargingTracker, parseTeslaMateTopic } from "./charging.mjs";
+import { createChargingDatabaseMonitor, deliverPendingChargingEvents } from "./charging-monitor.mjs";
 import { consumeLines } from "./lib/lines.mjs";
 import { spawnStreaming } from "./lib/process.mjs";
-import { ensureTeslaMate } from "./teslamate.mjs";
+import { ensureTeslaMate, getLatestChargingProcess } from "./teslamate.mjs";
 import { getRuntimeState, markScheduledPush, saveChargingMonitorState } from "./store.mjs";
 import { eventDedupeKey } from "./events.mjs";
 import { refreshReferenceFuelPrices } from "./fuel-prices.mjs";
@@ -14,6 +15,8 @@ const children = new Set();
 const seen = new Set();
 let mqttClient = null;
 let chargingQueue = Promise.resolve();
+let chargingTracker = null;
+let checkChargingDatabase = null;
 
 function log(message) {
   process.stdout.write(`[${new Date().toISOString()}] ${message}\n`);
@@ -84,9 +87,41 @@ async function checkScheduledPush() {
   log(`scheduled ${period} report sent`);
 }
 
+async function deliverChargingQueue(source, at = new Date().toISOString()) {
+  const result = await deliverPendingChargingEvents({
+    tracker: chargingTracker,
+    getRuntimeState,
+    saveState: saveChargingMonitorState,
+    sendEvent: async (chatId, event, key) => {
+      await sendChargingEvent(chatId, event, key);
+      log(`charging ${event.type} notification sent source=${source}`);
+    },
+    at
+  });
+  if (result.status === "no_chat") log(`charging notification pending: no registered chat source=${source}`);
+  if (result.discarded > 0) log(`charging stale notification discarded count=${result.discarded} source=${source}`);
+  return result;
+}
+
+function enqueueCharging(operation) {
+  const queued = chargingQueue.then(operation);
+  chargingQueue = queued.catch(() => {});
+  return queued;
+}
+
 async function startChargingMonitor() {
   const state = await getRuntimeState();
-  const tracker = new ChargingTracker(state.charging_monitor);
+  chargingTracker = new ChargingTracker(state.charging_monitor);
+  checkChargingDatabase = createChargingDatabaseMonitor({
+    tracker: chargingTracker,
+    getLatestProcess: getLatestChargingProcess,
+    getRuntimeState,
+    saveState: saveChargingMonitorState,
+    sendEvent: async (chatId, event, key) => {
+      await sendChargingEvent(chatId, event, key);
+      log(`charging ${event.type} notification sent source=database`);
+    }
+  });
   mqttClient = connect(config.mqttUrl, {
     clientId: `tesla-saving-ticket-${process.pid}`,
     clean: true,
@@ -113,33 +148,19 @@ async function startChargingMonitor() {
   mqttClient.on("message", (topic, payload) => {
     const parsed = parseTeslaMateTopic(topic, payload.toString("utf8"));
     if (!parsed) return;
-    chargingQueue = chargingQueue.then(async () => {
-      const events = tracker.update(parsed.carId, parsed.field, parsed.value, new Date().toISOString());
+    enqueueCharging(async () => {
+      const observedAt = new Date().toISOString();
+      const events = chargingTracker.update(parsed.carId, parsed.field, parsed.value, observedAt);
       if (parsed.field === "charging_state" || events.length > 0) {
-        await saveChargingMonitorState(tracker.toJSON());
+        await saveChargingMonitorState(chargingTracker.toJSON());
       }
-      for (const event of events) {
-        setTimeout(async () => {
-          try {
-            const current = await getRuntimeState();
-            if (!current.chat_id) {
-              log(`charging ${event.type} skipped: no registered chat`);
-              return;
-            }
-            if (!tracker.canSend(event, new Date().toISOString())) {
-              log(`charging ${event.type} skipped: state changed or estimate stale`);
-              return;
-            }
-            event.snapshot = tracker.snapshot(event.carId);
-            await sendChargingEvent(current.chat_id, event, event.sessionId);
-            log(`charging ${event.type} notification sent`);
-          } catch (error) {
-            log(`charging ${event.type} notification failed: ${error.message}`);
-          }
-        }, 750).unref();
-      }
+      await deliverChargingQueue("mqtt", observedAt);
     }).catch((error) => log(`MQTT message failed: ${error.message}`));
   });
+
+  await enqueueCharging(() => checkChargingDatabase())
+    .then((result) => log(`charging database monitor ready status=${result.status}`))
+    .catch((error) => log(`charging database initial check failed: ${error.message}`));
 }
 
 async function boot() {
@@ -150,8 +171,13 @@ async function boot() {
   ensureTeslaMate().then(() => log("TeslaMate compose services ready")).catch((error) => log(`TeslaMate startup check failed: ${error.message}`));
   startConsumer("im.message.receive_v1", handleMessageEvent);
   startConsumer("card.action.trigger", handleCardEvent);
-  startChargingMonitor().catch((error) => log(`MQTT charging monitor failed: ${error.message}`));
+  startChargingMonitor().catch((error) => log(`charging monitor failed: ${error.message}`));
   setInterval(() => checkScheduledPush().catch((error) => log(`scheduler failed: ${error.message}`)), 60_000).unref();
+  setInterval(() => {
+    if (!checkChargingDatabase) return;
+    enqueueCharging(() => checkChargingDatabase())
+      .catch((error) => log(`charging database check failed: ${error.message}`));
+  }, 60_000).unref();
   setInterval(() => refreshReferenceFuelPrices().catch((error) => log(`fuel reference refresh failed: ${error.message}`)), 6 * 60 * 60 * 1_000).unref();
 }
 

@@ -394,3 +394,20 @@ test("charging cards clearly describe configured limit and simulation", () => {
   }
   assert.doesNotMatch(JSON.stringify(near), /即将充满/);
 });
+
+test("completed charging card reports the actual session and asks for the bill", () => {
+  const card = assertCard(buildChargingStatusCard("completed", {
+    start_at: "2026-08-25T06:35:49Z",
+    end_at: "2026-08-25T06:56:39Z",
+    start_battery_level: 64,
+    end_battery_level: 97,
+    charge_energy_added: 17,
+    duration_min: 21
+  }, { isSimulation: true }));
+  const text = JSON.stringify(card);
+  for (const pattern of [/充电已结束/, /17(?:\.0+)? kWh/, /64% → 97%/, /21 分钟/, /14:35 → 14:56/, /发送充电账单截图/]) {
+    assert.match(text, pattern);
+  }
+  assert.doesNotMatch(text, /返回菜单/);
+  assert.match(text, /模拟数据/);
+});

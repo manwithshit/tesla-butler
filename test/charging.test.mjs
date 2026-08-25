@@ -77,3 +77,111 @@ test("near-limit alerts require current-session data that is at most two minutes
   assert.equal(tracker.canSend(near, "2026-08-25T01:02:01Z"), true);
   assert.equal(tracker.canSend(near, "2026-08-25T01:02:03Z"), false);
 });
+
+test("an active TeslaMate charging process emits one start notification and survives restart", () => {
+  const process = {
+    id: 12,
+    car_id: 1,
+    start_at: "2026-08-25T06:35:49Z",
+    end_at: null,
+    start_battery_level: 64,
+    latest_battery_level: 70,
+    latest_charger_power: 48,
+    latest_charge_energy_added: 3.2
+  };
+  const tracker = new ChargingTracker();
+  const started = tracker.reconcileProcess(process, "2026-08-25T06:36:30Z");
+  assert.deepEqual(started.map((event) => event.type), ["started"]);
+  assert.equal(started[0].snapshot.battery_level, 70);
+  assert.equal(started[0].snapshot.charger_power, 48);
+  assert.equal(started[0].snapshot.charge_energy_added, 3.2);
+  assert.equal(tracker.reconcileProcess(process, "2026-08-25T06:37:30Z").length, 0);
+
+  const restored = new ChargingTracker(tracker.toJSON());
+  assert.equal(restored.reconcileProcess(process, "2026-08-25T06:38:30Z").length, 0);
+});
+
+test("a charging process changing from active to ended emits one completed notification", () => {
+  const tracker = new ChargingTracker();
+  tracker.reconcileProcess({
+    id: 12,
+    car_id: 1,
+    start_at: "2026-08-25T06:35:49Z",
+    end_at: null,
+    start_battery_level: 64,
+    latest_battery_level: 70
+  }, "2026-08-25T06:36:30Z");
+
+  const completedProcess = {
+    id: 12,
+    car_id: 1,
+    start_at: "2026-08-25T06:35:49Z",
+    end_at: "2026-08-25T06:56:39Z",
+    start_battery_level: 64,
+    end_battery_level: 97,
+    charge_energy_added: 17,
+    duration_min: 21
+  };
+  const completed = tracker.reconcileProcess(completedProcess, "2026-08-25T06:57:00Z");
+  assert.deepEqual(completed.map((event) => event.type), ["completed"]);
+  assert.equal(completed[0].snapshot.start_battery_level, 64);
+  assert.equal(completed[0].snapshot.end_battery_level, 97);
+  assert.equal(completed[0].snapshot.charge_energy_added, 17);
+  assert.equal(completed[0].snapshot.duration_min, 21);
+  assert.equal(tracker.canSend(completed[0], "2026-08-25T06:57:01Z"), true);
+  assert.equal(tracker.reconcileProcess(completedProcess, "2026-08-25T06:58:00Z").length, 0);
+});
+
+test("a newly completed process is recovered even when it started and ended between polls", () => {
+  const tracker = new ChargingTracker();
+  const completed = tracker.reconcileProcess({
+    id: 13,
+    car_id: 1,
+    start_at: "2026-08-25T07:00:00Z",
+    end_at: "2026-08-25T07:00:40Z",
+    start_battery_level: 70,
+    end_battery_level: 72,
+    charge_energy_added: 0.8,
+    duration_min: 1
+  }, "2026-08-25T07:01:00Z");
+  assert.deepEqual(completed.map((event) => event.type), ["completed"]);
+});
+
+test("MQTT and PostgreSQL observations do not duplicate the same charging start", () => {
+  const process = {
+    id: 16,
+    car_id: 1,
+    start_at: "2026-08-25T10:00:00Z",
+    end_at: null,
+    start_battery_level: 50,
+    latest_battery_level: 51
+  };
+
+  const mqttFirst = new ChargingTracker();
+  const [mqttStarted] = mqttFirst.update("1", "charging_state", "Charging", "2026-08-25T10:00:01Z");
+  mqttFirst.acknowledge(mqttStarted);
+  assert.equal(mqttFirst.reconcileProcess(process, "2026-08-25T10:00:30Z").length, 0);
+  assert.equal(mqttFirst.pendingEvents().length, 0);
+
+  const databaseFirst = new ChargingTracker();
+  const [databaseStarted] = databaseFirst.reconcileProcess(process, "2026-08-25T10:00:30Z");
+  databaseFirst.acknowledge(databaseStarted);
+  assert.equal(databaseFirst.update("1", "charging_state", "Charging", "2026-08-25T10:00:31Z").length, 0);
+  assert.equal(databaseFirst.pendingEvents().length, 0);
+});
+
+test("worker startup does not replay an old completed charging process", () => {
+  const tracker = new ChargingTracker();
+  const events = tracker.reconcileProcess({
+    id: 2,
+    car_id: 1,
+    start_at: "2026-08-25T06:35:49Z",
+    end_at: "2026-08-25T06:56:39Z",
+    start_battery_level: 64,
+    end_battery_level: 97,
+    charge_energy_added: 17,
+    duration_min: 21
+  }, "2026-08-25T07:10:00Z");
+  assert.equal(events.length, 0);
+  assert.equal(tracker.pendingEvents().length, 0);
+});

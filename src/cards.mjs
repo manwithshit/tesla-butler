@@ -329,6 +329,37 @@ function chargeMinutes(value) {
 }
 
 export function buildChargingStatusCard(type, snapshot = {}, options = {}) {
+  if (type === "completed") {
+    const energy = snapshot.charge_energy_added === null || snapshot.charge_energy_added === undefined
+      ? "暂无"
+      : `${Number(snapshot.charge_energy_added).toFixed(2)} kWh`;
+    const duration = snapshot.duration_min === null || snapshot.duration_min === undefined
+      ? "暂无"
+      : formatDuration(snapshot.duration_min);
+    const batteryChange = snapshot.start_battery_level === null || snapshot.start_battery_level === undefined
+      || snapshot.end_battery_level === null || snapshot.end_battery_level === undefined
+      ? "暂无"
+      : `${snapshot.start_battery_level}% → ${snapshot.end_battery_level}%`;
+    const timeRange = snapshot.start_at && snapshot.end_at
+      ? `${formatClock(snapshot.start_at)} → ${formatClock(snapshot.end_at)}`
+      : "暂无";
+    return cardShell("充电已结束", `本次充入 ${energy}`, "充电已结束", [
+      metricRow([
+        metricColumn("充入电量", energy, { accent: true }),
+        metricColumn("充电时长", duration)
+      ], "bisect", "10px"),
+      { tag: "div", fields: [
+        field("电量变化", batteryChange),
+        field("充电时间", timeRange)
+      ] },
+      {
+        tag: "column_set", flex_mode: "none",
+        columns: [{ tag: "column", width: "weighted", weight: 1, background_style: "blue-50", padding: "12px", elements: [
+          { tag: "markdown", content: "**充电记录已保存。发送充电账单截图，可补全本次实际支出。**" }
+        ] }]
+      }
+    ], { width: "default", tag: options.isSimulation ? "模拟数据" : null });
+  }
   const nearLimit = type === "near_limit";
   const minutes = chargeMinutes(snapshot.time_to_full_charge);
   const limit = snapshot.charge_limit_soc === null || snapshot.charge_limit_soc === undefined

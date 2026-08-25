@@ -8,7 +8,8 @@
     "menu": "node src/cli.mjs menu",
     "worker": "node src/worker.mjs",
     "migrate:receipts": "node src/migrate-receipts.mjs",
-    "test:live": "node src/verify-live.mjs"
+    "test:live": "node src/verify-live.mjs",
+    "test:charging-live": "node src/verify-charging-live.mjs"
   },
   "engines": {
     "node": ">=22"

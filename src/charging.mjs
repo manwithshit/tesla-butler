@@ -41,12 +41,28 @@ function initialCar(value = {}) {
     snapshot: { ...(value.snapshot || {}) },
     field_updated_at: { ...(value.field_updated_at || {}) },
     charging_state: value.charging_state || null,
-    session: value.session ? { ...value.session } : null
+    session: value.session ? { ...value.session } : null,
+    process: value.process ? { ...value.process } : null
+  };
+}
+
+function processSnapshot(process) {
+  return {
+    battery_level: process.end_battery_level ?? process.latest_battery_level ?? process.start_battery_level ?? null,
+    charger_power: process.latest_charger_power ?? null,
+    charge_energy_added: process.charge_energy_added ?? process.latest_charge_energy_added ?? null,
+    start_battery_level: process.start_battery_level ?? null,
+    end_battery_level: process.end_battery_level ?? null,
+    duration_min: process.duration_min ?? null,
+    start_at: process.start_at ?? null,
+    end_at: process.end_at ?? null
   };
 }
 
 function milliseconds(value) {
-  const result = new Date(value).getTime();
+  const raw = String(value || "").trim();
+  const normalized = raw && !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw) ? `${raw}Z` : raw;
+  const result = new Date(normalized).getTime();
   return Number.isFinite(result) ? result : null;
 }
 
@@ -77,6 +93,15 @@ function nearLimitFromCurrentData(car, at) {
 export class ChargingTracker {
   constructor(saved = {}) {
     this.cars = new Map(Object.entries(saved.cars || {}).map(([id, value]) => [id, initialCar(value)]));
+    this.pendingEventsByKey = new Map(Object.entries(saved.pending_events || {}));
+  }
+
+  queue(events) {
+    for (const event of events) {
+      event.eventKey ||= `${event.sessionId}:${event.type}`;
+      this.pendingEventsByKey.set(event.eventKey, { ...event, snapshot: { ...event.snapshot } });
+    }
+    return events;
   }
 
   update(carId, field, value, at = new Date().toISOString()) {
@@ -120,7 +145,59 @@ export class ChargingTracker {
         events.push({ type: "near_limit", carId: id, sessionId: car.session.id, snapshot: { ...car.snapshot } });
       }
     }
-    return events;
+    return this.queue(events);
+  }
+
+  reconcileProcess(process, at = new Date().toISOString()) {
+    if (!process?.id || !process?.car_id) return [];
+    const id = String(process.car_id);
+    const processId = String(process.id);
+    const car = this.cars.get(id) || initialCar();
+    this.cars.set(id, car);
+    Object.assign(car.snapshot, processSnapshot(process), { updated_at: at });
+
+    if (!process.end_at) {
+      if (car.process?.id === processId) return [];
+      const alreadyStarted = Boolean(car.session);
+      car.charging_state = "charging";
+      car.session ||= {
+        id: `charge-db-${processId}`,
+        started_sent: true,
+        near_limit_sent: false,
+        started_at: process.start_at || at
+      };
+      car.process = { id: processId, active: true, started_sent: true, completed_sent: false };
+      return this.queue(alreadyStarted
+        ? []
+        : [{ type: "started", carId: id, sessionId: car.session.id, processId, snapshot: { ...car.snapshot } }]);
+    }
+
+    const processIsNew = car.process?.id !== processId;
+    const endedAtMs = milliseconds(process.end_at);
+    const observedAtMs = milliseconds(at);
+    const endedRecently = endedAtMs !== null
+      && observedAtMs !== null
+      && observedAtMs >= endedAtMs
+      && observedAtMs - endedAtMs <= freshnessWindowMs;
+    const shouldComplete = (car.process?.id === processId
+      && car.process.active
+      && !car.process.completed_sent)
+      || (processIsNew && endedRecently);
+    const sessionId = car.session?.id || `charge-db-${processId}`;
+    car.process = { id: processId, active: false, started_sent: true, completed_sent: true };
+    car.charging_state = "complete";
+    car.session = null;
+    return this.queue(shouldComplete
+      ? [{ type: "completed", carId: id, sessionId, processId, snapshot: { ...car.snapshot } }]
+      : []);
+  }
+
+  pendingEvents() {
+    return [...this.pendingEventsByKey.values()].map((event) => ({ ...event, snapshot: { ...event.snapshot } }));
+  }
+
+  acknowledge(event) {
+    if (event?.eventKey) this.pendingEventsByKey.delete(event.eventKey);
   }
 
   snapshot(carId) {
@@ -130,6 +207,12 @@ export class ChargingTracker {
   canSend(event, at = new Date().toISOString()) {
     if (!event?.carId || !event?.sessionId) return false;
     const car = this.cars.get(String(event.carId));
+    if (event.type === "completed") {
+      return Boolean(car?.process
+        && car.process.id === String(event.processId)
+        && !car.process.active
+        && car.process.completed_sent);
+    }
     if (!car?.session || car.session.id !== event.sessionId || car.charging_state !== "charging") return false;
     if (event.type === "started") return true;
     return event.type === "near_limit" && nearLimitFromCurrentData(car, at);
@@ -137,11 +220,13 @@ export class ChargingTracker {
 
   toJSON() {
     return {
+      pending_events: Object.fromEntries(this.pendingEventsByKey),
       cars: Object.fromEntries([...this.cars.entries()].map(([id, value]) => [id, {
         snapshot: value.snapshot,
         field_updated_at: value.field_updated_at,
         charging_state: value.charging_state,
-        session: value.session
+        session: value.session,
+        process: value.process
       }]))
     };
   }

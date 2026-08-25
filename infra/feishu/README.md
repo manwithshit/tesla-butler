@@ -75,6 +75,7 @@ lark-cli --profile tesla-saving-ticket event consume \
 - OCR：Apple Vision 为默认本地识别链路。只有环境中明确配置 `KIMI_BASE_URL` 时，才把对应 K3 服务作为未知版式兜底；项目不保存 API Key。
 - 保活：LaunchAgent 用 `caffeinate -ims` 包裹 Worker，避免 M5 因系统睡眠中断采集，同时允许显示器正常熄屏。
 - 数据：TeslaMate PostgreSQL 只读；截图保存在 `data/raw/feishu/`，确认后的结构化账单保存在 `data/processed/receipts.json`，均不提交。
+- 充电提醒：MQTT 负责实时事件，PostgreSQL 每 60 秒补偿检查最新充电会话；两者共用幂等状态。飞书失败时保留待发送事件，Worker 重启后继续尝试。
 
 文字入口：
 
@@ -95,6 +96,7 @@ tail -f data/processed/logs/worker.log
 node src/cli.mjs push-preview
 npm test
 npm run test:live
+npm run test:charging-live
 npm run migrate:receipts
 ```
 
