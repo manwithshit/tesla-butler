@@ -18,3 +18,5 @@ infra/tesla-auth/releases/
 docs/setup/feishu-app-setup.png
 migration/out/**
 !migration/out/.gitkeep
+/codex-*/
+/tasks-for-codex-*/
