@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -euo pipefail
+set -Eeuo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/common.sh"
 
 MODE="preflight"
@@ -8,6 +8,13 @@ BUNDLE=""
 REPLACE_TARGET=0
 SOURCE_M5_STOPPED=0
 STAGING=""
+CURRENT_STAGE="参数校验"
+
+report_error() {
+  local code=$?
+  echo "M1 导入失败：阶段=${CURRENT_STAGE}，行号=${BASH_LINENO[0]}，退出码=${code}。" >&2
+  return "$code"
+}
 
 usage() {
   echo "用法：$0 --bundle 文件 --replace-target-db [--mode preflight|cutover] [--source-m5-stopped]"
@@ -69,8 +76,10 @@ cleanup() {
   unset LARK_APP_ID LARK_APP_SECRET LARK_BRAND LARK_LANG || true
   exit "$code"
 }
+trap report_error ERR
 trap cleanup EXIT INT TERM
 
+CURRENT_STAGE="依赖检查"
 require_command docker
 require_command openssl
 require_command shasum
@@ -80,10 +89,12 @@ if [ "$MODE" = "cutover" ]; then
   require_command lark-cli
 fi
 
+CURRENT_STAGE="迁移包校验"
 if [ -f "$BUNDLE.sha256" ]; then
   (cd "$(dirname "$BUNDLE")" && shasum -a 256 -c "$(basename "$BUNDLE.sha256")")
 fi
 
+CURRENT_STAGE="迁移包解密"
 read_passphrase
 STAGING="$(mktemp -d "${TMPDIR:-/tmp}/tesla-saving-ticket-import.XXXXXX")"
 chmod 700 "$STAGING"
@@ -108,6 +119,7 @@ if [ "$MODE" = "cutover" ] && [ "$EXPORT_MODE" != "cutover" ]; then
   exit 1
 fi
 
+CURRENT_STAGE="飞书 profile 迁移"
 if [ "$MODE" = "cutover" ]; then
   if [ ! -f "$STAGING/credentials/feishu-profile.json" ]; then
     echo "最终迁移包缺少加密的飞书 profile。" >&2
@@ -117,30 +129,44 @@ if [ "$MODE" = "cutover" ]; then
   LARK_APP_SECRET="$(jq -er '.app_secret | select(type == "string" and length > 0)' "$STAGING/credentials/feishu-profile.json")"
   LARK_BRAND="$(jq -r '.brand // "feishu"' "$STAGING/credentials/feishu-profile.json")"
   LARK_LANG="$(jq -r '.lang // "zh_cn"' "$STAGING/credentials/feishu-profile.json")"
-  printf '%s' "$LARK_APP_SECRET" | lark-cli config init \
-    --name tesla-saving-ticket \
-    --app-id "$LARK_APP_ID" \
-    --app-secret-stdin \
-    --brand "$LARK_BRAND" \
-    --lang "$LARK_LANG" >/dev/null
-  unset LARK_APP_SECRET
-  if ! lark-cli --profile tesla-saving-ticket config show 2>/dev/null \
-    | jq -e --arg app_id "$LARK_APP_ID" '.appId == $app_id and (.appSecret | type == "string" and length > 0)' >/dev/null; then
+  EXISTING_PROFILE="$(lark-cli --profile tesla-saving-ticket config show 2>/dev/null || true)"
+  if printf '%s' "$EXISTING_PROFILE" \
+    | jq -e --arg app_id "$LARK_APP_ID" \
+      '(.appId == $app_id) and ((.appSecret | type) == "string") and ((.appSecret | length) > 0)' >/dev/null 2>&1; then
+    echo "M1 飞书 profile 已存在且与迁移包匹配，继续导入。"
+  else
+    printf '%s' "$LARK_APP_SECRET" | lark-cli config init \
+      --name tesla-saving-ticket \
+      --app-id "$LARK_APP_ID" \
+      --app-secret-stdin \
+      --brand "$LARK_BRAND" \
+      --lang "$LARK_LANG" >/dev/null
+  fi
+  unset LARK_APP_SECRET EXISTING_PROFILE
+  PROFILE_CHECK="$(lark-cli --profile tesla-saving-ticket config show 2>/dev/null || true)"
+  if ! printf '%s' "$PROFILE_CHECK" \
+    | jq -e --arg app_id "$LARK_APP_ID" \
+      '(.appId == $app_id) and ((.appSecret | type) == "string") and ((.appSecret | length) > 0)' >/dev/null 2>&1; then
     echo "M1 飞书 profile 写入后验证失败。" >&2
     exit 1
   fi
-  unset LARK_APP_ID LARK_BRAND LARK_LANG
+  unset PROFILE_CHECK LARK_APP_ID LARK_BRAND LARK_LANG
 fi
 
+CURRENT_STAGE="替换 TeslaMate 配置"
 cp "$STAGING/infra/teslamate/.env" "$PROJECT_ROOT/infra/teslamate/.env"
 chmod 600 "$PROJECT_ROOT/infra/teslamate/.env"
+CURRENT_STAGE="停止 M1 旧服务"
 stop_worker || true
 compose down -v --remove-orphans
+CURRENT_STAGE="启动 M1 数据库"
 compose up -d database mosquitto
 wait_for_database
+CURRENT_STAGE="恢复 TeslaMate 数据库"
 compose exec -T database pg_restore --clean --if-exists --no-owner --exit-on-error \
   -U teslamate -d teslamate < "$STAGING/teslamate.dump"
 
+CURRENT_STAGE="恢复本地账本与运行状态"
 mkdir -p "$PROJECT_ROOT/data/processed" "$PROJECT_ROOT/data/raw"
 for name in receipts.json runtime-state.json reference-fuel-prices.json; do
   if [ -f "$STAGING/data/processed/$name" ]; then
@@ -156,6 +182,7 @@ fi
 cp "$STAGING/MANIFEST.txt" "$PROJECT_ROOT/data/processed/migration-manifest.txt"
 chmod 600 "$PROJECT_ROOT/data/processed/migration-manifest.txt"
 
+CURRENT_STAGE="核对数据库计数"
 EXPECTED_DRIVES="$(awk -F= '$1 == "drives" {print $2}' "$STAGING/MANIFEST.txt")"
 EXPECTED_POSITIONS="$(awk -F= '$1 == "positions" {print $2}' "$STAGING/MANIFEST.txt")"
 EXPECTED_CHARGES="$(awk -F= '$1 == "charging_processes" {print $2}' "$STAGING/MANIFEST.txt")"
@@ -165,6 +192,7 @@ if [ "$ACTUAL" != "$EXPECTED_DRIVES|$EXPECTED_POSITIONS|$EXPECTED_CHARGES" ]; th
   exit 1
 fi
 
+CURRENT_STAGE="启动 M1 正式服务"
 if [ "$MODE" = "preflight" ]; then
   compose up -d grafana
   compose stop teslamate >/dev/null 2>&1 || true
