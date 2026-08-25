@@ -188,6 +188,26 @@ export async function markScheduledPush(key) {
   });
 }
 
+export async function getRouteImageCache() {
+  const state = await getRuntimeState();
+  return state.route_image_cache || {};
+}
+
+export async function setRouteImageCacheEntry(key, entry) {
+  await updateRuntimeState((state) => {
+    state.route_image_cache ||= {};
+    state.route_image_cache[key] = entry;
+    const entries = Object.entries(state.route_image_cache);
+    if (entries.length > 100) {
+      entries
+        .sort(([, left], [, right]) => String(left.cached_at || "").localeCompare(String(right.cached_at || "")))
+        .slice(0, entries.length - 100)
+        .forEach(([oldKey]) => delete state.route_image_cache[oldKey]);
+    }
+    return state;
+  });
+}
+
 async function writeRuntimeState(state) {
   await fs.mkdir(projectPath("data", "processed"), { recursive: true });
   const temp = `${runtimePath}.tmp`;

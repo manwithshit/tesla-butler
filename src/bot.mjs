@@ -16,6 +16,7 @@ import {
 import { calculateFuelComparisons, calculateTripElectricCost } from "./comparisons.mjs";
 import { refreshReferenceFuelPrices } from "./fuel-prices.mjs";
 import { renderRoutePreview } from "./map.mjs";
+import { resolveRouteImage } from "./route-image.mjs";
 import {
   getDriveRoute,
   getDriveGroup,
@@ -27,7 +28,15 @@ import {
   getPeriodTrips,
   getVehicleOverview
 } from "./teslamate.mjs";
-import { getReceiptTotals, opaqueId, registerChat, savePendingReceipt, setReceiptStatus } from "./store.mjs";
+import {
+  getReceiptTotals,
+  getRouteImageCache,
+  opaqueId,
+  registerChat,
+  savePendingReceipt,
+  setReceiptStatus,
+  setRouteImageCacheEntry
+} from "./store.mjs";
 import { selectMainRoute } from "./routes.mjs";
 
 const textActions = new Map([
@@ -106,7 +115,7 @@ async function uploadCardImage(imagePath) {
 }
 
 async function makePeriodCard(period) {
-  await refreshReferenceFuelPrices().catch(() => null);
+  refreshReferenceFuelPrices().catch(() => null);
   const isMonthly = period === "month" || period === "previous_month";
   const [trips, receipts, routeCandidates] = await Promise.all([
     getPeriodTrips(period),
@@ -121,11 +130,28 @@ async function makePeriodCard(period) {
     if (mainRoute) {
       try {
         const route = await getDriveRoute(mainRoute.representative_drive_id);
-        const preview = await renderRoutePreview(route, `${period}-main-route`, {
-          start: mainRoute.representative_start_road,
-          end: mainRoute.representative_end_road
+        const cacheKey = `period-v2-${opaqueId(JSON.stringify({
+          period,
+          drive: mainRoute.representative_drive_id,
+          count: mainRoute.trip_count,
+          distance: mainRoute.distance_km
+        }))}`;
+        const image = await resolveRouteImage({
+          cacheKey,
+          route,
+          labels: {
+            start: mainRoute.representative_start_road,
+            end: mainRoute.representative_end_road
+          }
+        }, {
+          readCache: getRouteImageCache,
+          writeCache: setRouteImageCacheEntry,
+          render: renderRoutePreview,
+          upload: uploadCardImage,
+          log: logRouteImage
         });
-        mainRoute.image_key = await uploadCardImage(preview.path);
+        if (image.status !== "success") throw new Error(`period map ${image.failureStage || "failed"}`);
+        mainRoute.image_key = image.imageKey;
       } catch {
         mainRoute = null;
       }
@@ -140,10 +166,21 @@ async function makeMenuCard() {
 
 async function makeLatestTripCard() {
   const trip = await getLatestTripGroup();
-  return makeTripGroupCard(trip, "latest-trip-route");
+  return makeTripGroupCard(trip);
 }
 
-async function makeTripGroupCard(trip, imageStem) {
+function logRouteImage(event) {
+  const fields = [
+    `status=${event.status}`,
+    `stage=${event.stage}`,
+    `cache_hit=${Boolean(event.cacheHit)}`,
+    ...(Number.isFinite(event.durationMs) ? [`duration_ms=${event.durationMs}`] : []),
+    ...(event.code ? [`code=${event.code}`] : [])
+  ];
+  process.stdout.write(`[${new Date().toISOString()}] route_image ${fields.join(" ")}\n`);
+}
+
+async function makeTripGroupCard(trip) {
   const [route, receipts] = await Promise.all([
     trip?.segment_ids?.length ? getDriveGroupRoute(trip.segment_ids) : Promise.resolve([]),
     getReceiptTotals("month")
@@ -154,24 +191,29 @@ async function makeTripGroupCard(trip, imageStem) {
       receipts.all_in_unit_price_cny_per_kwh
     );
   }
-  let imageKey = null;
-  let hasRoute = false;
-  let mapMeta = { hasBasemap: false, hasEnergyOverlay: false };
-  try {
-    const preview = await renderRoutePreview(route, imageStem, {
+  if (!trip) return buildLatestTripCard(null);
+  const cacheKey = `trip-v2-${opaqueId(JSON.stringify({
+    segments: trip.segment_ids || [trip.id],
+    endAt: trip.end_at || null
+  }))}`;
+  const image = await resolveRouteImage({
+    cacheKey,
+    route,
+    labels: {
       start: trip?.start_road,
       end: trip?.end_road
-    });
-    hasRoute = preview.hasRoute;
-    mapMeta = {
-      hasBasemap: preview.hasBasemap,
-      hasEnergyOverlay: preview.hasEnergyOverlay
-    };
-    imageKey = await uploadCardImage(preview.path);
-  } catch {
-    hasRoute = Array.isArray(route) && route.length >= 2;
-  }
-  return buildLatestTripCard(trip, imageKey, hasRoute, mapMeta);
+    }
+  }, {
+    readCache: getRouteImageCache,
+    writeCache: setRouteImageCacheEntry,
+    render: renderRoutePreview,
+    upload: uploadCardImage,
+    log: logRouteImage
+  });
+  return buildLatestTripCard(trip, image.imageKey || null, image.hasRoute, {
+    ...image.mapMeta,
+    failureStage: image.failureStage
+  });
 }
 
 function makeSimulatedPeriodCard(period, mainRoute = undefined) {
@@ -242,26 +284,35 @@ async function deliverCard(context, card, suffix) {
 }
 
 async function runAction(action, context) {
-  if (action === "menu") {
-    await deliverCard(context, await makeMenuCard(), "menu");
-    return;
-  }
-  if (action === "latest_trip") {
-    await deliverCard(context, await makeLatestTripCard(), "latest");
-    return;
-  }
-  if (action === "weekly_report" || action === "monthly_report") {
-    const period = action === "weekly_report" ? "week" : "month";
-    await deliverCard(context, await makePeriodCard(period), period);
-    return;
-  }
-  if (action === "upload_receipt_help") {
-    await deliverCard(context, buildUploadHelpCard(), "upload");
-    return;
-  }
-  if (action === "vehicle_overview") {
-    const [vehicle, stats] = await Promise.all([getVehicleOverview(), getPeriodTrips("month")]);
-    await deliverCard(context, buildVehicleOverviewCard(vehicle, stats), "overview");
+  const started = Date.now();
+  let status = "success";
+  try {
+    if (action === "menu") {
+      await deliverCard(context, await makeMenuCard(), "menu");
+      return;
+    }
+    if (action === "latest_trip") {
+      await deliverCard(context, await makeLatestTripCard(), "latest");
+      return;
+    }
+    if (action === "weekly_report" || action === "monthly_report") {
+      const period = action === "weekly_report" ? "week" : "month";
+      await deliverCard(context, await makePeriodCard(period), period);
+      return;
+    }
+    if (action === "upload_receipt_help") {
+      await deliverCard(context, buildUploadHelpCard(), "upload");
+      return;
+    }
+    if (action === "vehicle_overview") {
+      const [vehicle, stats] = await Promise.all([getVehicleOverview(), getPeriodTrips("month")]);
+      await deliverCard(context, buildVehicleOverviewCard(vehicle, stats), "overview");
+    }
+  } catch (error) {
+    status = "failed";
+    throw error;
+  } finally {
+    process.stdout.write(`[${new Date().toISOString()}] action name=${action} status=${status} duration_ms=${Date.now() - started}\n`);
   }
 }
 
@@ -394,6 +445,31 @@ export async function handleMessageEvent(event) {
   await runAction(action, { messageId: event.message_id });
 }
 
+export async function handleReceiptAction(event, dependencies = {}) {
+  const ops = { setReceiptStatus, sendText, ...dependencies };
+  const status = event.action === "confirm_receipt" ? "confirmed" : "ignored";
+  let receipt;
+  try {
+    receipt = await ops.setReceiptStatus(event.receipt_id, status);
+  } catch (error) {
+    await retryFeedback(
+      () => ops.sendText(event.chat_id, "记账失败：账单没有写入本地账本，请稍后重新点击。", `${event.event_id}:ledger-failed`),
+      2
+    );
+    return { status: "failed" };
+  }
+  const text = !receipt
+    ? "这条账单不存在或已被清理。"
+    : status === "confirmed"
+      ? `已记账：¥${Number(receipt.fields.amount_cny).toFixed(2)}${receipt.fields.energy_kwh ? ` / ${receipt.fields.energy_kwh} kWh` : ""}。`
+      : "已忽略这张充电账单。";
+  await retryFeedback(
+    () => ops.sendText(event.chat_id, text, `${event.event_id}:${status}`),
+    2
+  );
+  return { status: receipt ? status : "missing" };
+}
+
 export async function handleCardEvent(event) {
   await registerChat(event.chat_id);
   let value = {};
@@ -408,14 +484,12 @@ export async function handleCardEvent(event) {
     return;
   }
   if (action === "confirm_receipt" || action === "ignore_receipt") {
-    const status = action === "confirm_receipt" ? "confirmed" : "ignored";
-    const receipt = await setReceiptStatus(value.receipt_id, status);
-    const text = !receipt
-      ? "这条账单不存在或已被清理。"
-      : status === "confirmed"
-        ? `已记账：¥${Number(receipt.fields.amount_cny).toFixed(2)}${receipt.fields.energy_kwh ? ` / ${receipt.fields.energy_kwh} kWh` : ""}。`
-        : "已忽略这张充电账单。";
-    await sendText(event.chat_id, text, `${event.event_id}:${status}`);
+    await handleReceiptAction({
+      chat_id: event.chat_id,
+      event_id: event.event_id,
+      action,
+      receipt_id: value.receipt_id
+    });
   }
 }
 
@@ -469,7 +543,7 @@ export async function sendChargingEvent(chatId, event, key = Date.now(), options
 
 export async function sendCompletedTrip(chatId, event, key = Date.now()) {
   const trip = await getDriveGroup(event.trip.segment_ids);
-  await sendCard(chatId, await makeTripGroupCard(trip, `automatic-trip-${trip.segment_ids.join("-")}`), `${key}:trip`);
+  await sendCard(chatId, await makeTripGroupCard(trip), `${key}:trip`);
 }
 
 export async function pushApprovedSimulationCards(chatId, key = Date.now()) {

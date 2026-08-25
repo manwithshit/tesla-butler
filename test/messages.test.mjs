@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { handleImage, isImageLikeMessage } from "../src/bot.mjs";
+import { handleImage, handleReceiptAction, isImageLikeMessage } from "../src/bot.mjs";
 
 test("direct image messages are recognized", () => {
   assert.equal(isImageLikeMessage({ message_type: "image", content: "{}" }), true);
@@ -49,4 +49,40 @@ test("receipt image gets explicit failure feedback when recognition throws", asy
   assert.match(feedback[0], /已收到/);
   assert.match(feedback[1], /识别失败/);
   assert.match(feedback[1], /不会入账/);
+});
+
+test("receipt confirmation retries user feedback after the ledger is updated", async () => {
+  let feedbackAttempts = 0;
+  const result = await handleReceiptAction({
+    chat_id: "chat",
+    event_id: "event",
+    action: "confirm_receipt",
+    receipt_id: "receipt"
+  }, {
+    setReceiptStatus: async () => ({ fields: { amount_cny: 21.85, energy_kwh: 15.72 } }),
+    sendText: async () => {
+      feedbackAttempts += 1;
+      if (feedbackAttempts === 1) throw new Error("temporary Feishu failure");
+    }
+  });
+
+  assert.equal(result.status, "confirmed");
+  assert.equal(feedbackAttempts, 2);
+});
+
+test("receipt confirmation reports a ledger failure without claiming success", async () => {
+  const feedback = [];
+  const result = await handleReceiptAction({
+    chat_id: "chat",
+    event_id: "event",
+    action: "confirm_receipt",
+    receipt_id: "receipt"
+  }, {
+    setReceiptStatus: async () => { throw new Error("disk full"); },
+    sendText: async (_chatId, text) => feedback.push(text)
+  });
+
+  assert.equal(result.status, "failed");
+  assert.match(feedback[0], /记账失败/);
+  assert.doesNotMatch(feedback[0], /已记账/);
 });

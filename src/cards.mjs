@@ -193,6 +193,7 @@ export function buildLatestTripCard(trip, imageKey = null, hasRoute = false, map
     ? "暂不可算"
     : `¥${Number(trip.estimated_cost_cny).toFixed(2)}`;
   const routeName = `${trip?.start_road || "起点未知"} → ${trip?.end_road || "终点未知"}`;
+  const routeFailure = Boolean(hasTrip && mapMeta.failureStage);
   const routeElement = imageKey ? {
     tag: "img", img_key: imageKey,
     alt: { tag: "plain_text", content: hasRoute ? "最近行程路线轨迹" : "暂无完整行程轨迹" },
@@ -201,8 +202,8 @@ export function buildLatestTripCard(trip, imageKey = null, hasRoute = false, map
   } : {
     tag: "column_set", flex_mode: "none",
     columns: [{ tag: "column", background_style: "grey-50", padding: "14px", elements: [
-      { tag: "markdown", content: "**路线轨迹待生成**", text_align: "center" },
-      { tag: "markdown", content: "<font color='grey'>完成第一段行程后自动出现</font>", text_align: "center", text_size: "notation" }
+      { tag: "markdown", content: routeFailure ? "**地图生成失败**" : "**路线轨迹待生成**", text_align: "center" },
+      { tag: "markdown", content: `<font color='grey'>${routeFailure ? "地图生成失败，可重新点击" : "完成第一段行程后自动出现"}</font>`, text_align: "center", text_size: "notation" }
     ] }]
   };
   return cardShell("行程小结", hasTrip ? "最近一段完整行程" : "等待第一段完整行程", "行程小结", [
