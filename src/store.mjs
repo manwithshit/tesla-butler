@@ -213,3 +213,10 @@ export async function saveChargingMonitorState(chargingMonitor) {
     return state;
   });
 }
+
+export async function saveTripMonitorState(tripMonitor) {
+  await updateRuntimeState((state) => {
+    state.trip_monitor = tripMonitor;
+    return state;
+  });
+}

@@ -1,5 +1,6 @@
 import { config, projectPath } from "./config.mjs";
 import { runFile } from "./lib/process.mjs";
+import { groupDriveSegments } from "./trip-sessions.mjs";
 
 const composeArgs = [
   "compose",
@@ -126,6 +127,152 @@ export async function getLatestTrip() {
       ORDER BY d.end_date DESC
       LIMIT 1
     ), 'null'::json);
+  `);
+}
+
+function driveIdsSql(driveIds) {
+  const ids = [...new Set((driveIds || []).map(Number))];
+  if (ids.length === 0 || ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw new Error("invalid drive ids");
+  }
+  return ids.join(",");
+}
+
+export async function getDriveMonitorSnapshot() {
+  return sqlJson(`
+    WITH recent AS (
+      SELECT d.*
+      FROM drives d
+      WHERE d.end_date IS NOT NULL
+      ORDER BY d.id DESC
+      LIMIT 50
+    ), ordered AS (
+      SELECT r.*, lag(r.end_date) OVER (PARTITION BY r.car_id ORDER BY r.start_date) AS previous_end
+      FROM recent r
+    ), completed AS (
+      SELECT
+        d.id, d.car_id, d.start_date AS start_at, d.end_date AS end_at,
+        round(d.distance::numeric, 2) AS distance_km, d.duration_min,
+        NULLIF(sa.road, '') AS start_road, NULLIF(ea.road, '') AS end_road,
+        sp.latitude::float8 AS start_lat, sp.longitude::float8 AS start_lng,
+        ep.latitude::float8 AS end_lat, ep.longitude::float8 AS end_lng,
+        EXISTS (
+          SELECT 1 FROM charging_processes cp
+          WHERE d.previous_end IS NOT NULL
+            AND cp.car_id = d.car_id
+            AND cp.start_date >= d.previous_end
+            AND cp.start_date <= d.start_date
+        ) AS charging_between
+      FROM ordered d
+      LEFT JOIN addresses sa ON sa.id = d.start_address_id
+      LEFT JOIN addresses ea ON ea.id = d.end_address_id
+      LEFT JOIN positions sp ON sp.id = d.start_position_id
+      LEFT JOIN positions ep ON ep.id = d.end_position_id
+    ), active AS (
+      SELECT d.id, d.car_id, d.start_date AS start_at,
+             p.latitude::float8 AS start_lat, p.longitude::float8 AS start_lng,
+             EXISTS (
+               SELECT 1 FROM charging_processes cp
+               WHERE cp.car_id = d.car_id
+                 AND cp.start_date >= COALESCE((
+                   SELECT max(previous.end_date) FROM drives previous
+                   WHERE previous.car_id = d.car_id
+                     AND previous.end_date IS NOT NULL
+                     AND previous.end_date <= d.start_date
+                 ), d.start_date)
+                 AND cp.start_date <= d.start_date
+             ) AS charging_between
+      FROM drives d
+      LEFT JOIN positions p ON p.id = d.start_position_id
+      WHERE d.end_date IS NULL
+      ORDER BY d.id DESC
+      LIMIT 1
+    )
+    SELECT json_build_object(
+      'completed', COALESCE((SELECT json_agg(row_to_json(c) ORDER BY c.start_at) FROM completed c), '[]'::json),
+      'active', (SELECT row_to_json(a) FROM active a)
+    );
+  `, 3_000);
+}
+
+export async function getDriveGroup(driveIds) {
+  const ids = driveIdsSql(driveIds);
+  const segments = await sqlJson(`
+    SELECT COALESCE(json_agg(row_to_json(x) ORDER BY x.start_at), '[]'::json)
+    FROM (
+      SELECT
+        d.id, d.car_id, d.start_date AS start_at, d.end_date AS end_at,
+        round(d.distance::numeric, 2) AS distance_km, d.duration_min,
+        NULLIF(sa.road, '') AS start_road, NULLIF(ea.road, '') AS end_road,
+        sp.latitude::float8 AS start_lat, sp.longitude::float8 AS start_lng,
+        ep.latitude::float8 AS end_lat, ep.longitude::float8 AS end_lng,
+        CASE
+          WHEN e.valid_segments > 0 THEN round(greatest(e.net_kwh, 0)::numeric, 2)
+          WHEN c.efficiency IS NOT NULL
+            AND d.start_ideal_range_km IS NOT NULL
+            AND d.end_ideal_range_km IS NOT NULL
+          THEN round((greatest(d.start_ideal_range_km - d.end_ideal_range_km, 0) * c.efficiency / 1000)::numeric, 2)
+          ELSE NULL
+        END AS estimated_kwh,
+        CASE WHEN e.valid_segments > 0 THEN round(e.drawn_kwh::numeric, 2) ELSE NULL END AS drawn_kwh,
+        CASE WHEN e.valid_segments > 0 THEN round(e.regenerated_kwh::numeric, 2) ELSE NULL END AS regenerated_kwh,
+        CASE
+          WHEN e.valid_segments > 0 THEN 'power_integration'
+          WHEN c.efficiency IS NOT NULL
+            AND d.start_ideal_range_km IS NOT NULL
+            AND d.end_ideal_range_km IS NOT NULL
+          THEN 'range_efficiency'
+          ELSE 'unavailable'
+        END AS energy_source
+      FROM drives d
+      JOIN cars c ON c.id = d.car_id
+      LEFT JOIN addresses sa ON sa.id = d.start_address_id
+      LEFT JOIN addresses ea ON ea.id = d.end_address_id
+      LEFT JOIN positions sp ON sp.id = d.start_position_id
+      LEFT JOIN positions ep ON ep.id = d.end_position_id
+      LEFT JOIN LATERAL (
+        SELECT count(*) AS valid_segments,
+               sum(average_power * seconds / 3600) AS net_kwh,
+               sum(greatest(average_power, 0) * seconds / 3600) AS drawn_kwh,
+               sum(greatest(-average_power, 0) * seconds / 3600) AS regenerated_kwh
+        FROM (
+          SELECT EXTRACT(EPOCH FROM (lead(p.date) OVER (ORDER BY p.date) - p.date)) AS seconds,
+                 (p.power::float8 + lead(p.power::float8) OVER (ORDER BY p.date)) / 2 AS average_power
+          FROM positions p
+          WHERE p.drive_id = d.id AND p.power IS NOT NULL
+        ) samples
+        WHERE seconds > 0 AND seconds <= 10 AND average_power IS NOT NULL
+      ) e ON true
+      WHERE d.id IN (${ids}) AND d.end_date IS NOT NULL
+    ) x;
+  `);
+  const expectedIds = ids.split(",").map(Number);
+  if (segments.length !== expectedIds.length) throw new Error("one or more drive segments are unavailable");
+  const groups = groupDriveSegments(segments);
+  if (groups.length !== 1) throw new Error("drive segments do not form one trip");
+  return groups[0];
+}
+
+export async function getLatestTripGroup() {
+  const snapshot = await getDriveMonitorSnapshot();
+  const group = groupDriveSegments(snapshot.completed).at(-1);
+  return group ? getDriveGroup(group.segment_ids) : null;
+}
+
+export async function getDriveGroupRoute(driveIds) {
+  const ids = driveIdsSql(driveIds);
+  return sqlJson(`
+    WITH sampled AS (
+      SELECT p.latitude::float8 AS lat, p.longitude::float8 AS lng, p.drive_id,
+             p.date AS at, p.power::float8 AS power_kw,
+             row_number() OVER (PARTITION BY p.drive_id ORDER BY p.date) AS point_no
+      FROM positions p
+      WHERE p.drive_id IN (${ids})
+    )
+    SELECT COALESCE(json_agg(json_build_object(
+      'lat', lat, 'lng', lng, 'drive_id', drive_id, 'at', at, 'power_kw', power_kw
+    ) ORDER BY at) FILTER (WHERE point_no = 1 OR point_no % 3 = 0), '[]'::json)
+    FROM sampled;
   `);
 }
 

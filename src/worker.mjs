@@ -1,14 +1,16 @@
 import { config } from "./config.mjs";
 import { connect } from "mqtt";
-import { handleCardEvent, handleMessageEvent, sendChargingEvent, sendScheduledReport } from "./bot.mjs";
+import { handleCardEvent, handleMessageEvent, sendChargingEvent, sendCompletedTrip, sendScheduledReport } from "./bot.mjs";
 import { ChargingTracker, parseTeslaMateTopic } from "./charging.mjs";
 import { createChargingDatabaseMonitor, deliverPendingChargingEvents } from "./charging-monitor.mjs";
 import { consumeLines } from "./lib/lines.mjs";
 import { spawnStreaming } from "./lib/process.mjs";
-import { ensureTeslaMate, getLatestChargingProcess } from "./teslamate.mjs";
-import { getRuntimeState, markScheduledPush, saveChargingMonitorState } from "./store.mjs";
+import { ensureTeslaMate, getDriveMonitorSnapshot, getLatestChargingProcess } from "./teslamate.mjs";
+import { getRuntimeState, markScheduledPush, saveChargingMonitorState, saveTripMonitorState } from "./store.mjs";
+import { createTripDatabaseMonitor, TripTracker } from "./trip-monitor.mjs";
 import { eventDedupeKey } from "./events.mjs";
 import { refreshReferenceFuelPrices } from "./fuel-prices.mjs";
+import { dueScheduledReport } from "./schedule.mjs";
 
 let stopping = false;
 const children = new Set();
@@ -17,6 +19,8 @@ let mqttClient = null;
 let chargingQueue = Promise.resolve();
 let chargingTracker = null;
 let checkChargingDatabase = null;
+let tripQueue = Promise.resolve();
+let checkTripDatabase = null;
 
 function log(message) {
   process.stdout.write(`[${new Date().toISOString()}] ${message}\n`);
@@ -71,20 +75,11 @@ async function checkScheduledPush() {
   const state = await getRuntimeState();
   if (!state.chat_id) return;
   const now = shanghaiParts();
-  const dateKey = `${now.year}-${now.month}-${now.day}`;
-  let period = null;
-  let key = null;
-  if (now.weekday === "Mon" && now.hour === "09" && now.minute === "00") {
-    period = "previous_week";
-    key = `weekly:${dateKey}`;
-  } else if (now.day === "01" && now.hour === "09" && now.minute === "10") {
-    period = "previous_month";
-    key = `monthly:${now.year}-${now.month}`;
-  }
-  if (!period || state.sent?.[key]) return;
-  await sendScheduledReport(state.chat_id, period, `scheduled:${key}`);
-  await markScheduledPush(key);
-  log(`scheduled ${period} report sent`);
+  const due = dueScheduledReport(now, state);
+  if (!due) return;
+  await sendScheduledReport(state.chat_id, due.period, `scheduled:${due.key}`);
+  await markScheduledPush(due.key);
+  log(`scheduled ${due.period} report sent`);
 }
 
 async function deliverChargingQueue(source, at = new Date().toISOString()) {
@@ -107,6 +102,29 @@ function enqueueCharging(operation) {
   const queued = chargingQueue.then(operation);
   chargingQueue = queued.catch(() => {});
   return queued;
+}
+
+function enqueueTrip(operation) {
+  const queued = tripQueue.then(operation);
+  tripQueue = queued.catch(() => {});
+  return queued;
+}
+
+async function startTripMonitor() {
+  const state = await getRuntimeState();
+  const tracker = new TripTracker(state.trip_monitor);
+  checkTripDatabase = createTripDatabaseMonitor({
+    tracker,
+    getSnapshot: getDriveMonitorSnapshot,
+    getRuntimeState,
+    saveState: saveTripMonitorState,
+    sendTrip: async (chatId, event, key) => {
+      await sendCompletedTrip(chatId, event, key);
+      log(`trip notification sent segments=${event.trip.segment_ids.length}`);
+    }
+  });
+  const result = await enqueueTrip(() => checkTripDatabase());
+  log(`trip database monitor ready status=${result.status}`);
 }
 
 async function startChargingMonitor() {
@@ -172,11 +190,18 @@ async function boot() {
   startConsumer("im.message.receive_v1", handleMessageEvent);
   startConsumer("card.action.trigger", handleCardEvent);
   startChargingMonitor().catch((error) => log(`charging monitor failed: ${error.message}`));
+  startTripMonitor().catch((error) => log(`trip monitor failed: ${error.message}`));
+  checkScheduledPush().catch((error) => log(`scheduler failed: ${error.message}`));
   setInterval(() => checkScheduledPush().catch((error) => log(`scheduler failed: ${error.message}`)), 60_000).unref();
   setInterval(() => {
     if (!checkChargingDatabase) return;
     enqueueCharging(() => checkChargingDatabase())
       .catch((error) => log(`charging database check failed: ${error.message}`));
+  }, 60_000).unref();
+  setInterval(() => {
+    if (!checkTripDatabase) return;
+    enqueueTrip(() => checkTripDatabase())
+      .catch((error) => log(`trip database check failed: ${error.message}`));
   }, 60_000).unref();
   setInterval(() => refreshReferenceFuelPrices().catch((error) => log(`fuel reference refresh failed: ${error.message}`)), 6 * 60 * 60 * 1_000).unref();
 }

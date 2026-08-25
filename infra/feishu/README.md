@@ -76,6 +76,7 @@ lark-cli --profile tesla-saving-ticket event consume \
 - 保活：LaunchAgent 用 `caffeinate -ims` 包裹 Worker，避免 M5 因系统睡眠中断采集，同时允许显示器正常熄屏。
 - 数据：TeslaMate PostgreSQL 只读；截图保存在 `data/raw/feishu/`，确认后的结构化账单保存在 `data/processed/receipts.json`，均不提交。
 - 充电提醒：MQTT 负责实时事件，PostgreSQL 每 60 秒补偿检查最新充电会话；两者共用幂等状态。飞书失败时保留待发送事件，Worker 重启后继续尝试。
+- 行程提醒：PostgreSQL 每 60 秒检查完整行程，结束后等待 5 分钟；短停且位置连续的 TeslaMate 片段合并后自动发送一张行程卡。菜单中的“上次行程”使用相同合并口径，但仅在用户点击时返回。
 
 文字入口：
 
@@ -97,6 +98,7 @@ node src/cli.mjs push-preview
 npm test
 npm run test:live
 npm run test:charging-live
+npm run test:trip-live
 npm run migrate:receipts
 ```
 

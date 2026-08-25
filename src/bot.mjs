@@ -18,7 +18,10 @@ import { refreshReferenceFuelPrices } from "./fuel-prices.mjs";
 import { renderRoutePreview } from "./map.mjs";
 import {
   getDriveRoute,
+  getDriveGroup,
+  getDriveGroupRoute,
   getLatestTrip,
+  getLatestTripGroup,
   getLatestTripRoute,
   getPeriodRouteCandidates,
   getPeriodTrips,
@@ -136,9 +139,13 @@ async function makeMenuCard() {
 }
 
 async function makeLatestTripCard() {
-  const [trip, route, receipts] = await Promise.all([
-    getLatestTrip(),
-    getLatestTripRoute(),
+  const trip = await getLatestTripGroup();
+  return makeTripGroupCard(trip, "latest-trip-route");
+}
+
+async function makeTripGroupCard(trip, imageStem) {
+  const [route, receipts] = await Promise.all([
+    trip?.segment_ids?.length ? getDriveGroupRoute(trip.segment_ids) : Promise.resolve([]),
     getReceiptTotals("month")
   ]);
   if (trip) {
@@ -151,7 +158,7 @@ async function makeLatestTripCard() {
   let hasRoute = false;
   let mapMeta = { hasBasemap: false, hasEnergyOverlay: false };
   try {
-    const preview = await renderRoutePreview(route, "latest-trip-route", {
+    const preview = await renderRoutePreview(route, imageStem, {
       start: trip?.start_road,
       end: trip?.end_road
     });
@@ -458,6 +465,11 @@ export async function pushVehicleOverviewReviewCard(chatId, key = Date.now()) {
 
 export async function sendChargingEvent(chatId, event, key = Date.now(), options = {}) {
   await sendCard(chatId, buildChargingStatusCard(event.type, event.snapshot, options), `${key}:${event.type}`);
+}
+
+export async function sendCompletedTrip(chatId, event, key = Date.now()) {
+  const trip = await getDriveGroup(event.trip.segment_ids);
+  await sendCard(chatId, await makeTripGroupCard(trip, `automatic-trip-${trip.segment_ids.join("-")}`), `${key}:trip`);
 }
 
 export async function pushApprovedSimulationCards(chatId, key = Date.now()) {

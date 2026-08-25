@@ -35,6 +35,7 @@ fi
 
 npm run test:live
 npm run test:charging-live
+npm run test:trip-live
 
 if [ "$MODE" = "preflight" ]; then
   if compose ps --status running teslamate | grep -q teslamate; then
