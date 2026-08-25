@@ -73,8 +73,8 @@ function formatDuration(minutes) {
 
 function tripTimeParts(value) {
   if (!value) return "暂无";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "暂无";
+  const date = teslaMateDate(value);
+  if (!date) return "暂无";
   return Object.fromEntries(new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai",
     year: "numeric",

@@ -101,6 +101,19 @@ test("latest trip card keeps both dates when a trip crosses midnight", () => {
   assert.match(JSON.stringify(card), /行程时间.*8月24日 23:50.*8月25日 00:15/);
 });
 
+test("latest trip card treats TeslaMate timestamps without an offset as UTC and displays Shanghai time", () => {
+  const card = assertCard(buildLatestTripCard({
+    distance_km: 12.2,
+    duration_min: 38,
+    start_at: "2026-08-25T08:15:25.478",
+    end_at: "2026-08-25T08:53:48.000",
+    start_road: "起点道路",
+    end_road: "终点道路"
+  }));
+
+  assert.match(JSON.stringify(card), /行程时间.*8月25日 16:15.*16:53/);
+});
+
 test("trip and period KPI groups stay compact on mobile", () => {
   const trip = assertCard(buildLatestTripCard({
     distance_km: 8.2,
