@@ -27,9 +27,19 @@ if [ -f "$PROJECT_ROOT/data/processed/migration-manifest.txt" ]; then
   EXPECTED_POSITIONS="$(awk -F= '$1 == "positions" {print $2}' "$PROJECT_ROOT/data/processed/migration-manifest.txt")"
   EXPECTED_CHARGES="$(awk -F= '$1 == "charging_processes" {print $2}' "$PROJECT_ROOT/data/processed/migration-manifest.txt")"
   EXPECTED="$EXPECTED_DRIVES|$EXPECTED_POSITIONS|$EXPECTED_CHARGES"
-  if [ "$COUNTS" != "$EXPECTED" ]; then
-    echo "数据库计数不一致：expected=$EXPECTED actual=$COUNTS" >&2
-    exit 1
+  if [ "$MODE" = "preflight" ]; then
+    if [ "$COUNTS" != "$EXPECTED" ]; then
+      echo "数据库计数不一致：expected=$EXPECTED actual=$COUNTS" >&2
+      exit 1
+    fi
+  else
+    IFS='|' read -r ACTUAL_DRIVES ACTUAL_POSITIONS ACTUAL_CHARGES <<< "$COUNTS"
+    if [ "$ACTUAL_DRIVES" -lt "$EXPECTED_DRIVES" ] \
+      || [ "$ACTUAL_POSITIONS" -lt "$EXPECTED_POSITIONS" ] \
+      || [ "$ACTUAL_CHARGES" -lt "$EXPECTED_CHARGES" ]; then
+      echo "数据库少于迁移基线：baseline=$EXPECTED actual=$COUNTS" >&2
+      exit 1
+    fi
   fi
 fi
 
