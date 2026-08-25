@@ -153,7 +153,7 @@ chmod 600 "$BUNDLE.sha256"
 EXPORT_OK=1
 
 echo "已生成加密迁移包：$BUNDLE"
-echo "数据库基线：drives=$DRIVES，positions=$POSITIONS，charging_processes=$CHARGES"
+echo "数据库基线：drives=${DRIVES}，positions=${POSITIONS}，charging_processes=${CHARGES}"
 if [ "$MODE" = "preflight" ]; then
   echo "M5 服务未停止；此包仅用于 M1 预验证，不能作为最终切换包。"
 else
