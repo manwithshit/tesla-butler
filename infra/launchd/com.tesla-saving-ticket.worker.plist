@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tesla-saving-ticket.worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-ims</string>
+    <string>__NODE_CLI__</string>
+    <string>__PROJECT_ROOT__/src/worker.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__PROJECT_ROOT__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>TICKET_PROJECT_ROOT</key>
+    <string>__PROJECT_ROOT__</string>
+    <key>LARK_PROFILE</key>
+    <string>tesla-saving-ticket</string>
+    <key>LARK_CLI</key>
+    <string>__LARK_CLI__</string>
+    <key>DOCKER_CLI</key>
+    <string>__DOCKER_CLI__</string>
+    <key>NODE_CLI</key>
+    <string>__NODE_CLI__</string>
+    <key>KIMI_FALLBACK_ENABLED</key>
+    <string>0</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__PROJECT_ROOT__/data/processed/logs/worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>__PROJECT_ROOT__/data/processed/logs/worker.error.log</string>
+</dict>
+</plist>

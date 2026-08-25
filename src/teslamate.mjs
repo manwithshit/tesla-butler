@@ -1,0 +1,316 @@
+import { config, projectPath } from "./config.mjs";
+import { runFile } from "./lib/process.mjs";
+
+const composeArgs = [
+  "compose",
+  "--env-file", projectPath("infra", "teslamate", ".env"),
+  "-f", projectPath("infra", "teslamate", "compose.yaml")
+];
+
+async function sqlJson(sql) {
+  const { stdout } = await runFile(config.dockerCli, [
+    ...composeArgs,
+    "exec", "-T", "database",
+    "psql", "-X", "-q", "-t", "-A",
+    "-U", "teslamate", "-d", "teslamate",
+    "-c", sql
+  ], { cwd: config.root, timeout: 30_000 });
+
+  const value = stdout.trim();
+  return value ? JSON.parse(value) : null;
+}
+
+export async function ensureTeslaMate() {
+  await runFile(config.dockerCli, [...composeArgs, "up", "-d"], {
+    cwd: config.root,
+    timeout: 120_000
+  });
+}
+
+export async function getCollectionStatus() {
+  return sqlJson(`
+    SELECT json_build_object(
+      'cars', (SELECT count(*) FROM cars),
+      'drives', (SELECT count(*) FROM drives),
+      'positions', (SELECT count(*) FROM positions),
+      'charging_processes', (SELECT count(*) FROM charging_processes),
+      'latest_drive_at', (SELECT max(end_date) FROM drives),
+      'latest_position_at', (SELECT max(date) FROM positions)
+    );
+  `);
+}
+
+export async function getLatestTrip() {
+  return sqlJson(`
+    SELECT COALESCE((
+      SELECT json_build_object(
+        'id', d.id,
+        'start_at', d.start_date,
+        'end_at', d.end_date,
+        'distance_km', round(d.distance::numeric, 1),
+        'duration_min', d.duration_min,
+        'start_road', NULLIF(sa.road, ''),
+        'end_road', NULLIF(ea.road, ''),
+        'start_area', NULLIF(sa.city, ''),
+        'end_area', NULLIF(ea.city, ''),
+        'estimated_kwh', CASE
+          WHEN e.valid_segments > 0 THEN round(greatest(e.net_kwh, 0)::numeric, 2)
+          WHEN c.efficiency IS NOT NULL
+            AND d.start_ideal_range_km IS NOT NULL
+            AND d.end_ideal_range_km IS NOT NULL
+          THEN round((greatest(d.start_ideal_range_km - d.end_ideal_range_km, 0) * c.efficiency / 1000)::numeric, 2)
+          ELSE NULL
+        END,
+        'drawn_kwh', CASE WHEN e.valid_segments > 0 THEN round(e.drawn_kwh::numeric, 2) ELSE NULL END,
+        'regenerated_kwh', CASE WHEN e.valid_segments > 0 THEN round(e.regenerated_kwh::numeric, 2) ELSE NULL END,
+        'energy_source', CASE
+          WHEN e.valid_segments > 0 THEN 'power_integration'
+          WHEN c.efficiency IS NOT NULL
+            AND d.start_ideal_range_km IS NOT NULL
+            AND d.end_ideal_range_km IS NOT NULL
+          THEN 'range_efficiency'
+          ELSE 'unavailable'
+        END
+      )
+      FROM drives d
+      JOIN cars c ON c.id = d.car_id
+      LEFT JOIN addresses sa ON sa.id = d.start_address_id
+      LEFT JOIN addresses ea ON ea.id = d.end_address_id
+      LEFT JOIN LATERAL (
+        SELECT
+          count(*) AS valid_segments,
+          sum(average_power * seconds / 3600) AS net_kwh,
+          sum(greatest(average_power, 0) * seconds / 3600) AS drawn_kwh,
+          sum(greatest(-average_power, 0) * seconds / 3600) AS regenerated_kwh
+        FROM (
+          SELECT
+            EXTRACT(EPOCH FROM (lead(p.date) OVER (ORDER BY p.date) - p.date)) AS seconds,
+            (p.power::float8 + lead(p.power::float8) OVER (ORDER BY p.date)) / 2 AS average_power
+          FROM positions p
+          WHERE p.drive_id = d.id AND p.power IS NOT NULL
+        ) segments
+        WHERE seconds > 0 AND seconds <= 10 AND average_power IS NOT NULL
+      ) e ON true
+      WHERE d.end_date IS NOT NULL
+      ORDER BY d.end_date DESC
+      LIMIT 1
+    ), 'null'::json);
+  `);
+}
+
+export async function getLatestTripRoute() {
+  return sqlJson(`
+    WITH latest_drive AS (
+      SELECT id FROM drives WHERE end_date IS NOT NULL ORDER BY end_date DESC LIMIT 1
+    ), sampled AS (
+      SELECT p.latitude::float8 AS lat, p.longitude::float8 AS lng, p.drive_id,
+             p.date AS at, p.power::float8 AS power_kw,
+             row_number() OVER (ORDER BY p.date) AS point_no
+      FROM positions p
+      JOIN latest_drive d ON d.id = p.drive_id
+    )
+    SELECT COALESCE(json_agg(json_build_object(
+      'lat', lat, 'lng', lng, 'drive_id', drive_id, 'at', at, 'power_kw', power_kw
+    ) ORDER BY point_no) FILTER (WHERE point_no = 1 OR point_no % 3 = 0), '[]'::json)
+    FROM sampled;
+  `);
+}
+
+export async function getDriveRoute(driveId) {
+  const id = Number(driveId);
+  if (!Number.isInteger(id) || id <= 0) throw new Error("invalid drive id");
+  return sqlJson(`
+    WITH sampled AS (
+      SELECT p.latitude::float8 AS lat, p.longitude::float8 AS lng, p.drive_id,
+             p.date AS at, p.power::float8 AS power_kw,
+             row_number() OVER (ORDER BY p.date) AS point_no
+      FROM positions p
+      WHERE p.drive_id = ${id}
+    )
+    SELECT COALESCE(json_agg(json_build_object(
+      'lat', lat, 'lng', lng, 'drive_id', drive_id, 'at', at, 'power_kw', power_kw
+    ) ORDER BY point_no) FILTER (WHERE point_no = 1 OR point_no % 3 = 0), '[]'::json)
+    FROM sampled;
+  `);
+}
+
+export async function getVehicleOverview() {
+  return sqlJson(`
+    SELECT json_build_object(
+      'model', COALESCE(NULLIF(c.marketing_name, ''), NULLIF(c.model, ''), '特斯拉'),
+      'trim', NULLIF(c.trim_badging, ''),
+      'state', (
+        SELECT s.state::text FROM states s
+        WHERE s.car_id = c.id ORDER BY s.start_date DESC LIMIT 1
+      ),
+      'battery_level', p.battery_level,
+      'usable_battery_level', p.usable_battery_level,
+      'rated_range_km', round(p.rated_battery_range_km::numeric, 0),
+      'ideal_range_km', round(p.ideal_battery_range_km::numeric, 0),
+      'odometer_km', round(p.odometer::numeric, 0),
+      'inside_temp_c', p.inside_temp,
+      'outside_temp_c', p.outside_temp,
+      'is_climate_on', p.is_climate_on,
+      'updated_at', p.date
+    )
+    FROM cars c
+    LEFT JOIN LATERAL (
+      SELECT * FROM positions p0
+      WHERE p0.car_id = c.id ORDER BY p0.date DESC LIMIT 1
+    ) p ON true
+    ORDER BY c.display_priority, c.id
+    LIMIT 1;
+  `);
+}
+
+function periodBounds(period) {
+  if (!new Set(["week", "month", "previous_week", "previous_month"]).has(period)) {
+    throw new Error(`unsupported period: ${period}`);
+  }
+  const unit = period === "week" || period === "previous_week" ? "week" : "month";
+  const lowerOffset = period === "previous_month" ? " - interval '1 month'" : period === "previous_week" ? " - interval '1 week'" : "";
+  const upperClause = period === "previous_month" || period === "previous_week"
+    ? "AND d.start_date < b.until_utc"
+    : "";
+  return { unit, lowerOffset, upperClause };
+}
+
+export async function getPeriodTrips(period) {
+  const { unit, lowerOffset, upperClause } = periodBounds(period);
+  return sqlJson(`
+    WITH bounds AS (
+      SELECT
+        ((((date_trunc('${unit}', now() AT TIME ZONE 'Asia/Shanghai'))${lowerOffset}) AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC') AS since_utc,
+        (((date_trunc('${unit}', now() AT TIME ZONE 'Asia/Shanghai')) AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC') AS until_utc
+    ), selected_drives AS (
+      SELECT d.*, c.efficiency
+      FROM drives d
+      JOIN cars c ON c.id = d.car_id
+      CROSS JOIN bounds b
+      WHERE d.end_date IS NOT NULL AND d.start_date >= b.since_utc ${upperClause}
+    ), ordered_power AS (
+      SELECT
+        p.drive_id,
+        EXTRACT(EPOCH FROM (lead(p.date) OVER (PARTITION BY p.drive_id ORDER BY p.date) - p.date)) AS seconds,
+        (p.power::float8 + lead(p.power::float8) OVER (PARTITION BY p.drive_id ORDER BY p.date)) / 2 AS average_power
+      FROM positions p
+      JOIN selected_drives d ON d.id = p.drive_id
+      WHERE p.power IS NOT NULL
+    ), drive_power AS (
+      SELECT
+        drive_id,
+        count(*) AS valid_segments,
+        sum(average_power * seconds / 3600) AS net_kwh,
+        sum(greatest(average_power, 0) * seconds / 3600) AS drawn_kwh,
+        sum(greatest(-average_power, 0) * seconds / 3600) AS regenerated_kwh
+      FROM ordered_power
+      WHERE seconds > 0 AND seconds <= 10 AND average_power IS NOT NULL
+      GROUP BY drive_id
+    ), drive_energy AS (
+      SELECT
+        d.id,
+        CASE
+          WHEN p.valid_segments > 0 THEN greatest(p.net_kwh, 0)
+          WHEN d.efficiency IS NOT NULL
+            AND d.start_ideal_range_km IS NOT NULL
+            AND d.end_ideal_range_km IS NOT NULL
+          THEN greatest(d.start_ideal_range_km - d.end_ideal_range_km, 0) * d.efficiency / 1000
+          ELSE NULL
+        END AS estimated_kwh,
+        CASE WHEN p.valid_segments > 0 THEN p.drawn_kwh ELSE NULL END AS drawn_kwh,
+        CASE WHEN p.valid_segments > 0 THEN p.regenerated_kwh ELSE NULL END AS regenerated_kwh,
+        CASE
+          WHEN p.valid_segments > 0 THEN 'power_integration'
+          WHEN d.efficiency IS NOT NULL
+            AND d.start_ideal_range_km IS NOT NULL
+            AND d.end_ideal_range_km IS NOT NULL
+          THEN 'range_efficiency'
+          ELSE 'unavailable'
+        END AS energy_source
+      FROM selected_drives d
+      LEFT JOIN drive_power p ON p.drive_id = d.id
+    )
+    SELECT json_build_object(
+      'trip_count', count(d.id),
+      'distance_km', round(COALESCE(sum(d.distance), 0)::numeric, 1),
+      'duration_min', COALESCE(sum(d.duration_min), 0),
+      'average_distance_km', round(COALESCE(avg(d.distance), 0)::numeric, 1),
+      'max_speed_kmh', COALESCE(max(d.speed_max), 0),
+      'estimated_kwh', CASE
+        WHEN count(d.id) > 0 AND bool_and(e.estimated_kwh IS NOT NULL)
+        THEN round(COALESCE(sum(e.estimated_kwh), 0)::numeric, 2)
+        ELSE NULL
+      END,
+      'drawn_kwh', CASE
+        WHEN count(d.id) > 0 AND bool_and(e.drawn_kwh IS NOT NULL)
+        THEN round(COALESCE(sum(e.drawn_kwh), 0)::numeric, 2)
+        ELSE NULL
+      END,
+      'regenerated_kwh', CASE
+        WHEN count(d.id) > 0 AND bool_and(e.regenerated_kwh IS NOT NULL)
+        THEN round(COALESCE(sum(e.regenerated_kwh), 0)::numeric, 2)
+        ELSE NULL
+      END,
+      'energy_source', CASE
+        WHEN count(d.id) = 0 THEN 'unavailable'
+        WHEN bool_and(e.energy_source = 'power_integration') THEN 'power_integration'
+        WHEN bool_and(e.energy_source <> 'unavailable') THEN 'mixed'
+        ELSE 'unavailable'
+      END
+    )
+    FROM selected_drives d
+    LEFT JOIN drive_energy e ON e.id = d.id;
+  `);
+}
+
+export async function getPeriodRouteCandidates(period) {
+  const { unit, lowerOffset, upperClause } = periodBounds(period);
+  return sqlJson(`
+    WITH bounds AS (
+      SELECT
+        ((((date_trunc('${unit}', now() AT TIME ZONE 'Asia/Shanghai'))${lowerOffset}) AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC') AS since_utc,
+        (((date_trunc('${unit}', now() AT TIME ZONE 'Asia/Shanghai')) AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC') AS until_utc
+    )
+    SELECT COALESCE(json_agg(json_build_object(
+      'id', d.id,
+      'start_at', d.start_date,
+      'end_at', d.end_date,
+      'distance_km', round(d.distance::numeric, 1),
+      'start_lat', sp.latitude::float8,
+      'start_lng', sp.longitude::float8,
+      'end_lat', ep.latitude::float8,
+      'end_lng', ep.longitude::float8,
+      'start_road', NULLIF(sa.road, ''),
+      'end_road', NULLIF(ea.road, '')
+    ) ORDER BY d.end_date) FILTER (WHERE d.id IS NOT NULL), '[]'::json)
+    FROM drives d
+    CROSS JOIN bounds b
+    LEFT JOIN positions sp ON sp.id = d.start_position_id
+    LEFT JOIN positions ep ON ep.id = d.end_position_id
+    LEFT JOIN addresses sa ON sa.id = d.start_address_id
+    LEFT JOIN addresses ea ON ea.id = d.end_address_id
+    WHERE d.end_date IS NOT NULL AND d.start_date >= b.since_utc ${upperClause};
+  `);
+}
+
+export async function getPeriodRoute(period) {
+  const { unit, lowerOffset, upperClause } = periodBounds(period);
+  return sqlJson(`
+    WITH bounds AS (
+      SELECT
+        ((((date_trunc('${unit}', now() AT TIME ZONE 'Asia/Shanghai'))${lowerOffset}) AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC') AS since_utc,
+        (((date_trunc('${unit}', now() AT TIME ZONE 'Asia/Shanghai')) AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC') AS until_utc
+    ), sampled AS (
+      SELECT p.latitude::float8 AS lat, p.longitude::float8 AS lng, p.drive_id,
+             row_number() OVER (PARTITION BY p.drive_id ORDER BY p.date) AS point_no
+      FROM positions p
+      JOIN drives d ON d.id = p.drive_id
+      CROSS JOIN bounds b
+      WHERE d.end_date IS NOT NULL AND d.start_date >= b.since_utc ${upperClause}
+    )
+    SELECT COALESCE(json_agg(json_build_object(
+      'lat', lat, 'lng', lng, 'drive_id', drive_id
+    ) ORDER BY drive_id, point_no) FILTER (WHERE point_no = 1 OR point_no % 5 = 0), '[]'::json)
+    FROM sampled;
+  `);
+}

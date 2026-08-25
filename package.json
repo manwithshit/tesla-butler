@@ -1,0 +1,19 @@
+{
+  "name": "tesla-saving-ticket",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "status": "node src/cli.mjs status",
+    "menu": "node src/cli.mjs menu",
+    "worker": "node src/worker.mjs",
+    "migrate:receipts": "node src/migrate-receipts.mjs",
+    "test:live": "node src/verify-live.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "mqtt": "^5.15.2"
+  }
+}
