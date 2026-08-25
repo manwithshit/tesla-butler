@@ -76,7 +76,7 @@ if [ "$MODE" = "cutover" ]; then
   CUTOVER_STOPPED=1
 fi
 
-read_passphrase
+read_new_passphrase
 mkdir -p "$OUTPUT_DIR"
 STAGING="$(mktemp -d "${TMPDIR:-/tmp}/tesla-saving-ticket-migration.XXXXXX")"
 chmod 700 "$STAGING"

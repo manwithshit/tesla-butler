@@ -68,3 +68,28 @@ read_passphrase() {
   fi
   export MIGRATION_PASSPHRASE
 }
+
+read_new_passphrase() {
+  local first second
+  if [ -n "${MIGRATION_PASSPHRASE:-}" ]; then
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    echo "需要在交互式终端输入迁移口令。" >&2
+    exit 1
+  fi
+  read -r -s -p "设置迁移口令（至少 12 位）：" first
+  echo
+  if [ "${#first}" -lt 12 ]; then
+    echo "迁移口令至少需要 12 位。" >&2
+    exit 1
+  fi
+  read -r -s -p "再次输入迁移口令：" second
+  echo
+  if [ "$first" != "$second" ]; then
+    echo "两次迁移口令不一致。" >&2
+    exit 1
+  fi
+  MIGRATION_PASSPHRASE="$first"
+  export MIGRATION_PASSPHRASE
+}
