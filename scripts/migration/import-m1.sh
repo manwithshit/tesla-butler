@@ -129,24 +129,17 @@ if [ "$MODE" = "cutover" ]; then
   LARK_APP_SECRET="$(jq -er '.app_secret | select(type == "string" and length > 0)' "$STAGING/credentials/feishu-profile.json")"
   LARK_BRAND="$(jq -r '.brand // "feishu"' "$STAGING/credentials/feishu-profile.json")"
   LARK_LANG="$(jq -r '.lang // "zh_cn"' "$STAGING/credentials/feishu-profile.json")"
-  EXISTING_PROFILE="$(lark-cli --profile tesla-saving-ticket config show 2>/dev/null || true)"
-  if printf '%s' "$EXISTING_PROFILE" \
-    | jq -e --arg app_id "$LARK_APP_ID" \
-      '(.appId == $app_id) and ((.appSecret | type) == "string") and ((.appSecret | length) > 0)' >/dev/null 2>&1; then
-    echo "M1 飞书 profile 已存在且与迁移包匹配，继续导入。"
-  else
-    printf '%s' "$LARK_APP_SECRET" | lark-cli config init \
-      --name tesla-saving-ticket \
-      --app-id "$LARK_APP_ID" \
-      --app-secret-stdin \
-      --brand "$LARK_BRAND" \
-      --lang "$LARK_LANG" >/dev/null
-  fi
-  unset LARK_APP_SECRET EXISTING_PROFILE
+  printf '%s' "$LARK_APP_SECRET" | lark-cli config init \
+    --name tesla-saving-ticket \
+    --app-id "$LARK_APP_ID" \
+    --app-secret-stdin \
+    --brand "$LARK_BRAND" \
+    --lang "$LARK_LANG" >/dev/null
+  unset LARK_APP_SECRET
   PROFILE_CHECK="$(lark-cli --profile tesla-saving-ticket config show 2>/dev/null || true)"
   if ! printf '%s' "$PROFILE_CHECK" \
     | jq -e --arg app_id "$LARK_APP_ID" \
-      '(.appId == $app_id) and ((.appSecret | type) == "string") and ((.appSecret | length) > 0)' >/dev/null 2>&1; then
+      '.appId == $app_id' >/dev/null 2>&1; then
     echo "M1 飞书 profile 写入后验证失败。" >&2
     exit 1
   fi
