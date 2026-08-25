@@ -53,6 +53,8 @@ output/          可分享的图片、卡片和报告
 
 完整操作与回滚见 `docs/engineering/260825_M5迁移M1_方案与操作.md`。
 
+M1 后续维护的产品背景、当前架构、过程文件地图、双机边界和修 Bug 流程见 `docs/engineering/260825_M1长期维护交接.md`。
+
 ## 当前阶段
 
 1. 在 M5 上部署 TeslaMate 官方项目的 4.1.1 镜像与 PostgreSQL。
