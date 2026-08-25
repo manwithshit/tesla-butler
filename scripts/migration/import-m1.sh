@@ -66,6 +66,7 @@ cleanup() {
     rm -rf "$STAGING"
   fi
   unset MIGRATION_PASSPHRASE || true
+  unset LARK_APP_ID LARK_APP_SECRET LARK_BRAND LARK_LANG || true
   exit "$code"
 }
 trap cleanup EXIT INT TERM
@@ -74,6 +75,10 @@ require_command docker
 require_command openssl
 require_command shasum
 require_command tar
+if [ "$MODE" = "cutover" ]; then
+  require_command jq
+  require_command lark-cli
+fi
 
 if [ -f "$BUNDLE.sha256" ]; then
   (cd "$(dirname "$BUNDLE")" && shasum -a 256 -c "$(basename "$BUNDLE.sha256")")
@@ -101,6 +106,30 @@ EXPORT_MODE="$(awk -F= '$1 == "export_mode" {print $2}' "$STAGING/MANIFEST.txt")
 if [ "$MODE" = "cutover" ] && [ "$EXPORT_MODE" != "cutover" ]; then
   echo "最终切换只能导入 cutover 模式生成的迁移包。" >&2
   exit 1
+fi
+
+if [ "$MODE" = "cutover" ]; then
+  if [ ! -f "$STAGING/credentials/feishu-profile.json" ]; then
+    echo "最终迁移包缺少加密的飞书 profile。" >&2
+    exit 1
+  fi
+  LARK_APP_ID="$(jq -er '.app_id | select(type == "string" and length > 0)' "$STAGING/credentials/feishu-profile.json")"
+  LARK_APP_SECRET="$(jq -er '.app_secret | select(type == "string" and length > 0)' "$STAGING/credentials/feishu-profile.json")"
+  LARK_BRAND="$(jq -r '.brand // "feishu"' "$STAGING/credentials/feishu-profile.json")"
+  LARK_LANG="$(jq -r '.lang // "zh_cn"' "$STAGING/credentials/feishu-profile.json")"
+  printf '%s' "$LARK_APP_SECRET" | lark-cli config init \
+    --name tesla-saving-ticket \
+    --app-id "$LARK_APP_ID" \
+    --app-secret-stdin \
+    --brand "$LARK_BRAND" \
+    --lang "$LARK_LANG" >/dev/null
+  unset LARK_APP_SECRET
+  if ! lark-cli --profile tesla-saving-ticket config show 2>/dev/null \
+    | jq -e --arg app_id "$LARK_APP_ID" '.appId == $app_id and (.appSecret | type == "string" and length > 0)' >/dev/null; then
+    echo "M1 飞书 profile 写入后验证失败。" >&2
+    exit 1
+  fi
+  unset LARK_APP_ID LARK_BRAND LARK_LANG
 fi
 
 cp "$STAGING/infra/teslamate/.env" "$PROJECT_ROOT/infra/teslamate/.env"
