@@ -195,7 +195,7 @@ export async function getDriveMonitorSnapshot() {
   `, 3_000);
 }
 
-export async function getDriveGroup(driveIds) {
+export async function getDriveGroup(driveIds, options = {}) {
   const ids = driveIdsSql(driveIds);
   const segments = await sqlJson(`
     SELECT COALESCE(json_agg(row_to_json(x) ORDER BY x.start_at), '[]'::json)
@@ -248,7 +248,7 @@ export async function getDriveGroup(driveIds) {
   `);
   const expectedIds = ids.split(",").map(Number);
   if (segments.length !== expectedIds.length) throw new Error("one or more drive segments are unavailable");
-  const groups = groupDriveSegments(segments);
+  const groups = groupDriveSegments(segments, options);
   if (groups.length !== 1) throw new Error("drive segments do not form one trip");
   return groups[0];
 }

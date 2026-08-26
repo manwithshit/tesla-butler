@@ -542,7 +542,7 @@ export async function sendChargingEvent(chatId, event, key = Date.now(), options
 }
 
 export async function sendCompletedTrip(chatId, event, key = Date.now()) {
-  const trip = await getDriveGroup(event.trip.segment_ids);
+  const trip = event.trip || await getDriveGroup(event.segment_ids);
   await sendCard(chatId, await makeTripGroupCard(trip), `${key}:trip`);
 }
 

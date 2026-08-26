@@ -24,6 +24,24 @@ function emptySignal() {
   return { initialized: false, value: null };
 }
 
+function normalizePendingEvents(savedEvents) {
+  const entries = Object.entries(savedEvents || {}).flatMap(([savedKey, event]) => {
+    const segmentIds = [...new Set((event?.segment_ids || event?.trip?.segment_ids || [])
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && id > 0))];
+    if (segmentIds.length === 0) return [];
+    const eventKey = String(event?.eventKey || savedKey || `trip-${segmentIds.join("-")}`);
+    return [[eventKey, {
+      type: "completed_trip",
+      eventKey,
+      tripId: String(event?.tripId || eventKey),
+      segment_ids: segmentIds,
+      reason: event?.reason || "restored_pending"
+    }]];
+  });
+  return Object.fromEntries(entries);
+}
+
 function normalizeState(saved) {
   return {
     version: 2,
@@ -34,7 +52,7 @@ function normalizeState(saved) {
       locked: { ...emptySignal(), ...(saved.signals?.locked || {}) },
       driver_front_door_open: { ...emptySignal(), ...(saved.signals?.driver_front_door_open || {}) }
     },
-    pending_events: clone(saved.pending_events || {}),
+    pending_events: normalizePendingEvents(saved.pending_events),
     sent_keys: clone(saved.sent_keys || {})
   };
 }
@@ -75,7 +93,35 @@ export class TripSessionTracker {
       this.state.session.finalization_reason = "inactivity_timeout";
       this.queueCurrentSession();
     }
+    if (
+      snapshot?.active
+      && this.state.session?.phase === "finalizing"
+      && this.state.session.segment_ids.length > 0
+    ) {
+      this.queueCurrentSession();
+    }
     if (snapshot?.active && !this.state.session) this.state.session = newSession(at);
+    for (const drive of completed) {
+      const id = Number(drive.id) || 0;
+      if (id <= this.state.last_processed_drive_id) continue;
+      const gapMs = timeMs(drive.start_at) - timeMs(this.state.session?.parked_at);
+      const recoveredBoundary = this.state.session?.segment_ids?.length > 0
+        && (Boolean(drive.charging_between)
+          || (Number.isFinite(gapMs) && gapMs >= tripBoundaryDefaults.inactivityTimeoutMs));
+      if (recoveredBoundary) {
+        this.state.session.finalization_reason = drive.charging_between
+          ? "charging_between"
+          : "inactivity_timeout";
+        this.queueCurrentSession();
+      }
+      if (!this.state.session) this.state.session = newSession(drive.start_at || at, "parked");
+      const wasFinalizing = this.state.session.phase === "finalizing";
+      if (!this.state.session.segment_ids.includes(id)) this.state.session.segment_ids.push(id);
+      if (!wasFinalizing) this.state.session.phase = "parked";
+      this.state.session.parked_at = drive.end_at || at;
+      if (!wasFinalizing) this.state.session.last_event_at = drive.end_at || at;
+      this.state.last_processed_drive_id = id;
+    }
     if (
       snapshot?.active
       && this.state.session
@@ -87,16 +133,6 @@ export class TripSessionTracker {
       this.state.session.parked_at = null;
       this.state.session.finalize_at = null;
       this.state.session.finalization_reason = null;
-    }
-    for (const drive of completed) {
-      const id = Number(drive.id) || 0;
-      if (id <= this.state.last_processed_drive_id) continue;
-      if (!this.state.session) this.state.session = newSession(drive.start_at || at, "parked");
-      if (!this.state.session.segment_ids.includes(id)) this.state.session.segment_ids.push(id);
-      this.state.session.phase = "parked";
-      this.state.session.parked_at = drive.end_at || at;
-      this.state.session.last_event_at = drive.end_at || at;
-      this.state.last_processed_drive_id = id;
     }
     if (
       this.state.session?.phase === "finalizing"
@@ -164,6 +200,14 @@ export class TripSessionTracker {
       };
     }
     this.state.session = null;
+    return true;
+  }
+
+  acknowledge(event, at = new Date().toISOString()) {
+    const eventKey = event?.eventKey;
+    if (!eventKey || !this.state.pending_events[eventKey]) return false;
+    delete this.state.pending_events[eventKey];
+    this.state.sent_keys[eventKey] = at;
     return true;
   }
 
