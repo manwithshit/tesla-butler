@@ -10,7 +10,8 @@
     "migrate:receipts": "node src/migrate-receipts.mjs",
     "test:live": "node src/verify-live.mjs",
     "test:charging-live": "node src/verify-charging-live.mjs",
-    "test:trip-live": "node src/verify-trip-live.mjs"
+    "test:trip-live": "node src/verify-trip-live.mjs",
+    "test:trip-session-live": "node src/verify-trip-session-live.mjs"
   },
   "engines": {
     "node": ">=22"
