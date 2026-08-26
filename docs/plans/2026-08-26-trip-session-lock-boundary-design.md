@@ -43,9 +43,7 @@
   last_event_at: "ISO timestamp",
   parked_at: null,
   finalize_at: null,
-  finalization_reason: null,
-  door_open_seen: false,
-  door_closed_seen: false
+  finalization_reason: null
 }
 ```
 
@@ -94,7 +92,7 @@ pending event 只保存 `segment_ids` 和幂等 key。发送时再从 PostgreSQL
 
 - 新增 `vehicle-signals.mjs`，只解析 `locked` 与 `driver_front_door_open` 的布尔载荷。
 - Worker 在既有 charging topics 基础上订阅这两个 topics；不依赖 `shift_state`。
-- trip tracker 在 MQTT 订阅开始前完成恢复和首次数据库检查，保证 retained baseline 不早于状态机初始化。
+- trip tracker 在 MQTT 订阅开始前完成恢复和首次数据库检查，保证 retained baseline 不早于状态机初始化；每个门锁信号入队后也先做一次数据库核对，尽量先确认停车事实再应用门锁边沿。
 - MQTT trip signal 与 trip DB 检查共用 `tripQueue` 串行化，避免状态写入竞争。
 - charging MQTT 和 charging DB 补偿链路均把新的 started 事件通知 trip tracker。
 - 保留既有 Feishu consumer、充电队列、scheduler 和地图处理架构。

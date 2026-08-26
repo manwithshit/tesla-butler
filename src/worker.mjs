@@ -192,12 +192,15 @@ async function startChargingMonitor() {
     const observedAt = new Date().toISOString();
     const tripSignal = parseVehicleSignalTopic(topic, payload.toString("utf8"));
     if (tripSignal) {
-      enqueueTrip(() => persistTripMutation(() => tripTracker?.observeVehicleSignal(
-        tripSignal.field,
-        tripSignal.value,
-        observedAt,
-        { retained: Boolean(packet?.retain) }
-      ))).catch((error) => log(`trip signal check failed: ${error.message}`));
+      enqueueTrip(async () => {
+        if (checkTripDatabase) await checkTripDatabase();
+        return persistTripMutation(() => tripTracker?.observeVehicleSignal(
+          tripSignal.field,
+          tripSignal.value,
+          observedAt,
+          { retained: Boolean(packet?.retain) }
+        ));
+      }).catch((error) => log(`trip signal check failed: ${error.message}`));
     }
     const parsed = parseTeslaMateTopic(topic, payload.toString("utf8"));
     if (!parsed) return;
