@@ -5,9 +5,11 @@ import { ChargingTracker, parseTeslaMateTopic } from "./charging.mjs";
 import { createChargingDatabaseMonitor, deliverPendingChargingEvents } from "./charging-monitor.mjs";
 import { consumeLines } from "./lib/lines.mjs";
 import { spawnStreaming } from "./lib/process.mjs";
-import { ensureTeslaMate, getDriveMonitorSnapshot, getLatestChargingProcess } from "./teslamate.mjs";
+import { ensureTeslaMate, getDriveGroup, getDriveMonitorSnapshot, getLatestChargingProcess } from "./teslamate.mjs";
 import { getRuntimeState, markScheduledPush, saveChargingMonitorState, saveTripMonitorState } from "./store.mjs";
-import { createTripDatabaseMonitor, TripTracker } from "./trip-monitor.mjs";
+import { createTripDatabaseMonitor } from "./trip-monitor.mjs";
+import { TripSessionTracker, tripBoundaryDefaults } from "./trip-session.mjs";
+import { parseVehicleSignalTopic, tripSignalTopics } from "./vehicle-signals.mjs";
 import { eventDedupeKey } from "./events.mjs";
 import { refreshReferenceFuelPrices } from "./fuel-prices.mjs";
 import { dueScheduledReport } from "./schedule.mjs";
@@ -20,6 +22,7 @@ let chargingQueue = Promise.resolve();
 let chargingTracker = null;
 let checkChargingDatabase = null;
 let tripQueue = Promise.resolve();
+let tripTracker = null;
 let checkTripDatabase = null;
 
 function log(message) {
@@ -110,12 +113,32 @@ function enqueueTrip(operation) {
   return queued;
 }
 
+async function persistTripMutation(operation) {
+  if (!tripTracker) return false;
+  const before = JSON.stringify(tripTracker.toJSON());
+  const changed = operation();
+  if (changed || JSON.stringify(tripTracker.toJSON()) !== before) {
+    await saveTripMonitorState(tripTracker.toJSON());
+    return true;
+  }
+  return false;
+}
+
+async function observeTripChargingEvents(events, observedAt) {
+  if (!events.some((event) => event.type === "started")) return false;
+  return enqueueTrip(() => persistTripMutation(() => tripTracker?.observeChargingStarted(observedAt)));
+}
+
 async function startTripMonitor() {
   const state = await getRuntimeState();
-  const tracker = new TripTracker(state.trip_monitor);
+  tripTracker = new TripSessionTracker(state.trip_monitor);
   checkTripDatabase = createTripDatabaseMonitor({
-    tracker,
+    tracker: tripTracker,
     getSnapshot: getDriveMonitorSnapshot,
+    getTrip: (segmentIds) => getDriveGroup(segmentIds, {
+      pauseMs: tripBoundaryDefaults.inactivityTimeoutMs,
+      endpointMeters: 100
+    }),
     getRuntimeState,
     saveState: saveTripMonitorState,
     sendTrip: async (chatId, event, key) => {
@@ -138,7 +161,8 @@ async function startChargingMonitor() {
     sendEvent: async (chatId, event, key) => {
       await sendChargingEvent(chatId, event, key);
       log(`charging ${event.type} notification sent source=database`);
-    }
+    },
+    onEvents: observeTripChargingEvents
   });
   mqttClient = connect(config.mqttUrl, {
     clientId: `tesla-saving-ticket-${process.pid}`,
@@ -146,7 +170,7 @@ async function startChargingMonitor() {
     reconnectPeriod: 3_000,
     connectTimeout: 10_000
   });
-  const topics = [
+  const chargingTopics = [
     "battery_level",
     "plugged_in",
     "charging_state",
@@ -155,23 +179,34 @@ async function startChargingMonitor() {
     "charge_energy_added",
     "time_to_full_charge"
   ].map((field) => `teslamate/cars/+/${field}`);
+  const topics = [...chargingTopics, ...tripSignalTopics];
 
   mqttClient.on("connect", () => {
     mqttClient.subscribe(topics, { qos: 0 }, (error) => {
       if (error) log(`MQTT subscribe failed: ${error.message}`);
-      else log("MQTT charging monitor connected");
+      else log("MQTT charging and trip monitors connected");
     });
   });
   mqttClient.on("error", (error) => log(`MQTT error: ${error.message}`));
-  mqttClient.on("message", (topic, payload) => {
+  mqttClient.on("message", (topic, payload, packet) => {
+    const observedAt = new Date().toISOString();
+    const tripSignal = parseVehicleSignalTopic(topic, payload.toString("utf8"));
+    if (tripSignal) {
+      enqueueTrip(() => persistTripMutation(() => tripTracker?.observeVehicleSignal(
+        tripSignal.field,
+        tripSignal.value,
+        observedAt,
+        { retained: Boolean(packet?.retain) }
+      ))).catch((error) => log(`trip signal check failed: ${error.message}`));
+    }
     const parsed = parseTeslaMateTopic(topic, payload.toString("utf8"));
     if (!parsed) return;
     enqueueCharging(async () => {
-      const observedAt = new Date().toISOString();
       const events = chargingTracker.update(parsed.carId, parsed.field, parsed.value, observedAt);
       if (parsed.field === "charging_state" || events.length > 0) {
         await saveChargingMonitorState(chargingTracker.toJSON());
       }
+      await observeTripChargingEvents(events, observedAt);
       await deliverChargingQueue("mqtt", observedAt);
     }).catch((error) => log(`MQTT message failed: ${error.message}`));
   });
@@ -189,8 +224,8 @@ async function boot() {
   ensureTeslaMate().then(() => log("TeslaMate compose services ready")).catch((error) => log(`TeslaMate startup check failed: ${error.message}`));
   startConsumer("im.message.receive_v1", handleMessageEvent);
   startConsumer("card.action.trigger", handleCardEvent);
-  startChargingMonitor().catch((error) => log(`charging monitor failed: ${error.message}`));
-  startTripMonitor().catch((error) => log(`trip monitor failed: ${error.message}`));
+  await startTripMonitor().catch((error) => log(`trip monitor failed: ${error.message}`));
+  await startChargingMonitor().catch((error) => log(`charging monitor failed: ${error.message}`));
   checkScheduledPush().catch((error) => log(`scheduler failed: ${error.message}`));
   setInterval(() => checkScheduledPush().catch((error) => log(`scheduler failed: ${error.message}`)), 60_000).unref();
   setInterval(() => {
@@ -202,7 +237,7 @@ async function boot() {
     if (!checkTripDatabase) return;
     enqueueTrip(() => checkTripDatabase())
       .catch((error) => log(`trip database check failed: ${error.message}`));
-  }, 60_000).unref();
+  }, tripBoundaryDefaults.pollMs).unref();
   setInterval(() => refreshReferenceFuelPrices().catch((error) => log(`fuel reference refresh failed: ${error.message}`)), 6 * 60 * 60 * 1_000).unref();
 }
 

@@ -36,6 +36,7 @@ export function createChargingDatabaseMonitor({
   getRuntimeState,
   saveState,
   sendEvent,
+  onEvents,
   now = () => new Date(),
   timeoutMs = 3_000
 }) {
@@ -51,7 +52,8 @@ export function createChargingDatabaseMonitor({
       const process = await Promise.race([getLatestProcess(), timeout]).finally(() => clearTimeout(timer));
       const observedAt = now().toISOString();
       const before = JSON.stringify(tracker.toJSON());
-      if (process) tracker.reconcileProcess(process, observedAt);
+      const observedEvents = process ? tracker.reconcileProcess(process, observedAt) : [];
+      if (observedEvents.length > 0) await onEvents?.(observedEvents, observedAt);
       if (JSON.stringify(tracker.toJSON()) !== before) {
         await saveState(tracker.toJSON());
       }

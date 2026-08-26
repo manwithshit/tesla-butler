@@ -32,6 +32,31 @@ test("database monitor delivers a missed charging start once", async () => {
   assert.equal(sent.length, 1);
 });
 
+test("database monitor reports a new charging start once to its boundary callback", async () => {
+  const observed = [];
+  const tracker = new ChargingTracker();
+  const check = createChargingDatabaseMonitor({
+    tracker,
+    getLatestProcess: async () => ({
+      id: 112,
+      car_id: 1,
+      start_at: "2026-08-26T06:35:49Z",
+      end_at: null,
+      start_battery_level: 64,
+      latest_battery_level: 70
+    }),
+    getRuntimeState: async () => ({}),
+    saveState: async () => {},
+    sendEvent: async () => {},
+    onEvents: async (events) => observed.push(...events),
+    now: () => new Date("2026-08-26T06:36:30Z")
+  });
+
+  await check();
+  await check();
+  assert.deepEqual(observed.map((event) => event.type), ["started"]);
+});
+
 test("database monitor never overlaps a slow check", async () => {
   let release;
   let calls = 0;
