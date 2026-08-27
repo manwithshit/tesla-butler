@@ -11,8 +11,13 @@ export async function deliverPendingChargingEvents({
   if (!state.chat_id) return { status: "no_chat", events: events.length };
   let delivered = 0;
   let discarded = 0;
+  let waiting = 0;
   for (const event of events) {
     if (!tracker.canSend(event, at)) {
+      if (tracker.shouldWait(event)) {
+        waiting += 1;
+        continue;
+      }
       tracker.acknowledge(event);
       await saveState(tracker.toJSON());
       discarded += 1;
@@ -24,9 +29,10 @@ export async function deliverPendingChargingEvents({
     delivered += 1;
   }
   return {
-    status: delivered > 0 ? "delivered" : "discarded",
+    status: delivered > 0 ? "delivered" : waiting > 0 ? "waiting" : "discarded",
     events: delivered,
-    discarded
+    discarded,
+    waiting
   };
 }
 
