@@ -8,7 +8,7 @@ import { spawnStreaming } from "./lib/process.mjs";
 import { ensureTeslaMate, getDriveGroup, getDriveMonitorSnapshot, getLatestChargingProcess } from "./teslamate.mjs";
 import { getRuntimeState, markScheduledPush, saveChargingMonitorState, saveTripMonitorState } from "./store.mjs";
 import { createTripDatabaseMonitor } from "./trip-monitor.mjs";
-import { TripSessionTracker, tripBoundaryDefaults } from "./trip-session.mjs";
+import { summarizeTripState, TripSessionTracker, tripBoundaryDefaults } from "./trip-session.mjs";
 import { parseVehicleSignalTopic, tripSignalTopics } from "./vehicle-signals.mjs";
 import { eventDedupeKey } from "./events.mjs";
 import { refreshReferenceFuelPrices } from "./fuel-prices.mjs";
@@ -113,12 +113,31 @@ function enqueueTrip(operation) {
   return queued;
 }
 
-async function persistTripMutation(operation) {
+function logTripStateTransition(source, before, after) {
+  if (JSON.stringify(before) === JSON.stringify(after)) return;
+  log(
+    `trip state source=${source}`
+    + ` phase=${before.phase}->${after.phase}`
+    + ` segments=${before.segment_count}->${after.segment_count}`
+    + ` pending=${before.pending_count}->${after.pending_count}`
+    + ` active=${before.active}->${after.active}`
+    + ` boundary=${before.boundary_stage}->${after.boundary_stage}`
+    + ` reason=${after.reason}`
+  );
+}
+
+async function persistTripMutation(operation, source = "mutation") {
   if (!tripTracker) return false;
-  const before = JSON.stringify(tripTracker.toJSON());
+  const beforeState = tripTracker.toJSON();
+  const before = JSON.stringify(beforeState);
   const changed = operation();
   if (changed || JSON.stringify(tripTracker.toJSON()) !== before) {
     await saveTripMonitorState(tripTracker.toJSON());
+    logTripStateTransition(
+      source,
+      summarizeTripState(beforeState),
+      summarizeTripState(tripTracker.toJSON())
+    );
     return true;
   }
   return false;
@@ -126,13 +145,16 @@ async function persistTripMutation(operation) {
 
 async function observeTripChargingEvents(events, observedAt) {
   if (!events.some((event) => event.type === "started")) return false;
-  return enqueueTrip(() => persistTripMutation(() => tripTracker?.observeChargingStarted(observedAt)));
+  return enqueueTrip(() => persistTripMutation(
+    () => tripTracker?.observeChargingStarted(observedAt),
+    "charging"
+  ));
 }
 
 async function startTripMonitor() {
   const state = await getRuntimeState();
   tripTracker = new TripSessionTracker(state.trip_monitor);
-  checkTripDatabase = createTripDatabaseMonitor({
+  const runTripDatabaseCheck = createTripDatabaseMonitor({
     tracker: tripTracker,
     getSnapshot: getDriveMonitorSnapshot,
     getTrip: (segmentIds) => getDriveGroup(segmentIds, {
@@ -146,6 +168,12 @@ async function startTripMonitor() {
       log(`trip notification sent segments=${event.trip.segment_ids.length}`);
     }
   });
+  checkTripDatabase = async () => {
+    const before = summarizeTripState(tripTracker.toJSON());
+    const result = await runTripDatabaseCheck();
+    logTripStateTransition(before.phase === "idle" ? "startup_db" : "database", before, summarizeTripState(tripTracker.toJSON()));
+    return result;
+  };
   const result = await enqueueTrip(() => checkTripDatabase());
   log(`trip database monitor ready status=${result.status}`);
 }
@@ -194,12 +222,15 @@ async function startChargingMonitor() {
     if (tripSignal) {
       enqueueTrip(async () => {
         if (checkTripDatabase) await checkTripDatabase();
-        return persistTripMutation(() => tripTracker?.observeVehicleSignal(
-          tripSignal.field,
-          tripSignal.value,
-          observedAt,
-          { retained: Boolean(packet?.retain) }
-        ));
+        return persistTripMutation(
+          () => tripTracker?.observeVehicleSignal(
+            tripSignal.field,
+            tripSignal.value,
+            observedAt,
+            { retained: Boolean(packet?.retain) }
+          ),
+          `mqtt_${tripSignal.field}`
+        );
       }).catch((error) => log(`trip signal check failed: ${error.message}`));
     }
     const parsed = parseTeslaMateTopic(topic, payload.toString("utf8"));

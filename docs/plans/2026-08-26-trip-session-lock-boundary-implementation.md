@@ -8,6 +8,23 @@
 
 **Tech Stack:** Node.js ESM, `node:test`, MQTT.js, TeslaMate PostgreSQL through Docker Compose, launchd, lark-cli.
 
+## 2026-08-27 production race follow-up
+
+The first real multi-segment drive exposed two ordering races that the original plan did not model explicitly:
+
+- A parked timeout was evaluated before a newly completed continuation was absorbed, so the earlier segment could be queued alone.
+- Door/lock edges arriving while PostgreSQL still exposed the just-finished drive as active were discarded.
+
+The corrective vertical slices are:
+
+- [x] RED→GREEN: absorb a short-gap completed continuation before evaluating inactivity.
+- [x] RED→GREEN: an active continuation suppresses the parked timeout, even after one hour of wall time.
+- [x] RED→GREEN: persist a door-open/close/lock candidate during database lag and validate it against the completed segment end.
+- [x] RED→GREEN: reject candidates that occurred materially before the database end and never synthesize candidates from retained messages.
+- [x] RED→GREEN: restore a pending boundary candidate across Worker restart without duplicate delivery.
+- [x] RED→GREEN: charging finalization waits for the currently active database segment to be absorbed.
+- [x] Add aggregate-only trip state transition evidence to Worker logs.
+
 ---
 
 ## File map

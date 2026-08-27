@@ -16,11 +16,11 @@
 
 ## 状态模型
 
-新增纯状态机 `TripSessionTracker`，由现有 `TripTracker` 对外兼容导出。持久化结构版本为 2：
+新增纯状态机 `TripSessionTracker`，由现有 `TripTracker` 对外兼容导出。持久化结构版本为 3：
 
 ```js
 {
-  version: 2,
+  version: 3,
   initialized: true,
   last_processed_drive_id: 0,
   session: null,
@@ -40,10 +40,12 @@
   phase: "driving" | "parked" | "door_open" | "door_closed" | "finalizing",
   segment_ids: [],
   started_at: "ISO timestamp",
+  active_started_at: null,
   last_event_at: "ISO timestamp",
   parked_at: null,
   finalize_at: null,
-  finalization_reason: null
+  finalization_reason: null,
+  boundary_candidate: null
 }
 ```
 
@@ -59,18 +61,21 @@ pending event 只保存 `segment_ids` 和幂等 key。发送时再从 PostgreSQL
 
 ### 停车、开门、关门和落锁
 
-1. 新 completed drive 写入当前 session 的 `segment_ids`，状态进入 `parked`。
-2. `driver_front_door_open` 的 `false → true` 把状态推进到 `door_open`。
-3. 随后的 `true → false` 把状态推进到 `door_closed`。
-4. 只有门序列完成后出现新的 `locked false → true`，才进入 `finalizing`。
-5. `finalize_at` 固定为边界时间加 45 秒。
-6. trip DB 每 15 秒检查一次；达到 `finalize_at` 且数据库已经没有 active drive 后，创建一个 pending event 并尝试发送，因此正常推送窗口为确认离车后约 45–60 秒。
+1. 每轮先吸收所有新 completed drive，再判断 active drive、落锁候选和超时；不得在数据库新段尚未吸收前发送旧 session。
+2. 新 completed drive 写入当前 session 的 `segment_ids`，状态进入 `parked`。
+3. `driver_front_door_open` 的 `false → true` 记录持久化候选并把已停车状态推进到 `door_open`。
+4. 随后的 `true → false` 记录候选关门时间并把已停车状态推进到 `door_closed`。
+5. 只有门序列完成后出现新的 `locked false → true`，才补齐候选落锁时间。
+6. 若 MQTT 边沿早于 PostgreSQL 的 completed 可见性，候选在 `driving` 中只缓存、不结束；即使 active 暂时消失，只要对应 completed 尚未吸收，也不得排队。数据库段落盘后，候选开门时间必须位于最后段结束后，允许最多 10 秒的提交时钟容差，才进入 `finalizing`。更早的候选会被清除。
+7. `finalize_at` 固定为落锁时间加 45 秒。
+8. trip DB 每 15 秒检查一次；达到 `finalize_at`、数据库已经没有 active drive 且所有 completed 段已吸收后，创建一个 pending event 并尝试发送，因此正常推送窗口为确认离车后约 45–60 秒。
 
 单独落锁、单独开关门、重复相同值以及行驶中的落锁均不会结束行程。
 
 ### 未落锁续驾与超时
 
-- `parked` 后一小时内再次出现 active drive，且尚未进入 finalizing，则恢复 `driving` 并继续累计同一 session。
+- `parked` 后再次出现 active drive，且尚未确认真实边界，则恢复 `driving` 并继续累计同一 session；active drive 无条件压制 parked 超时，避免长行程被上一段停车时间截断。
+- 恢复驾驶时清除未完成的旧门锁候选，避免后续缺失门事件时误用上一次停车信号。
 - 真实字段变化、驾驶变化或充电变化会更新 `last_event_at`；重复相同 MQTT 值不会延长超时。
 - `parked` 后连续一小时没有驾驶、充电或相关字段变化，直接把已有 segments 排入 pending 并结束 session。此时数据库已稳定，无需再增加 45 秒。
 
@@ -94,6 +99,7 @@ pending event 只保存 `segment_ids` 和幂等 key。发送时再从 PostgreSQL
 - Worker 在既有 charging topics 基础上订阅这两个 topics；不依赖 `shift_state`。
 - trip tracker 在 MQTT 订阅开始前完成恢复和首次数据库检查，保证 retained baseline 不早于状态机初始化；每个门锁信号入队后也先做一次数据库核对，尽量先确认停车事实再应用门锁边沿。
 - MQTT trip signal 与 trip DB 检查共用 `tripQueue` 串行化，避免状态写入竞争。
+- Worker 只记录 phase、segment 数、pending 数、active 布尔、候选阶段和原因的聚合状态变化，便于线上定位且不暴露行程内容。
 - charging MQTT 和 charging DB 补偿链路均把新的 started 事件通知 trip tracker。
 - 保留既有 Feishu consumer、充电队列、scheduler 和地图处理架构。
 
