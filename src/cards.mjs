@@ -362,7 +362,10 @@ export function buildChargingStatusCard(type, snapshot = {}, options = {}) {
   const limit = snapshot.charge_limit_soc === null || snapshot.charge_limit_soc === undefined
     ? "设置上限"
     : `${snapshot.charge_limit_soc}%`;
-  const battery = snapshot.battery_level === null || snapshot.battery_level === undefined ? "--" : `${snapshot.battery_level}%`;
+  const batteryValue = nearLimit
+    ? snapshot.battery_level
+    : snapshot.start_battery_level ?? snapshot.battery_level;
+  const battery = batteryValue === null || batteryValue === undefined ? "--" : `${batteryValue}%`;
   const power = snapshot.charger_power === null || snapshot.charger_power === undefined ? "暂无" : `${snapshot.charger_power} kW`;
   const remaining = minutes === null ? "时间估算中" : `${minutes} 分钟`;
   const title = nearLimit ? "即将完成充电" : "正在充电";
@@ -371,8 +374,8 @@ export function buildChargingStatusCard(type, snapshot = {}, options = {}) {
     {
       tag: "column_set", flex_mode: "bisect", horizontal_spacing: "10px",
       columns: nearLimit
-        ? [metricColumn("预计剩余", remaining, { accent: true }), metricColumn("当前电量", battery)]
-        : [metricColumn("当前电量", battery, { accent: true }), metricColumn("预计剩余", remaining)]
+        ? [metricColumn("Tesla 当前预估", remaining, { accent: true }), metricColumn("当前电量", battery)]
+        : [metricColumn("开始电量", battery, { accent: true }), metricColumn("Tesla 当前预估", remaining)]
     },
     { tag: "div", fields: [
       field("充电上限", limit),
@@ -385,8 +388,8 @@ export function buildChargingStatusCard(type, snapshot = {}, options = {}) {
       tag: "column_set", flex_mode: "none",
       columns: [{ tag: "column", width: "weighted", weight: 1, background_style: "blue-50", padding: "12px", elements: [
         { tag: "markdown", content: nearLimit
-          ? `**预计还有 ${remaining}达到 ${limit} 充电上限。**`
-          : `**车辆已开始充电，预计还有 ${remaining}达到 ${limit} 充电上限。**` }
+          ? `**Tesla 当前预估还有 ${remaining}达到 ${limit} 充电上限。**\n<font color='grey'>高电量阶段会随充电功率变化。</font>`
+          : `**车辆已开始充电，Tesla 当前预估还有 ${remaining}达到 ${limit} 充电上限。**` }
       ] }]
     }
   ], { width: "default", tag: options.isSimulation ? "模拟数据" : null });

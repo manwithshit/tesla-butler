@@ -20,6 +20,13 @@ const terminalStates = new Set(["complete", "disconnected"]);
 const freshnessWindowMs = 2 * 60 * 1000;
 const sessionOrderingToleranceMs = 10 * 1000;
 const sessionFields = ["time_to_full_charge", "charger_power", "charge_energy_added"];
+const completedProcessFields = [
+  "start_battery_level",
+  "end_battery_level",
+  "duration_min",
+  "start_at",
+  "end_at"
+];
 
 function parseValue(field, raw) {
   if (numericFields.has(field)) {
@@ -75,6 +82,18 @@ function isFresh(fieldAt, nowAt, sessionAt = null) {
   return sessionMs === null || fieldMs >= sessionMs - sessionOrderingToleranceMs;
 }
 
+function isFreshSinceSession(fieldAt, nowAt, sessionAt) {
+  const fieldMs = milliseconds(fieldAt);
+  const nowMs = milliseconds(nowAt);
+  const sessionMs = milliseconds(sessionAt);
+  return fieldMs !== null
+    && nowMs !== null
+    && sessionMs !== null
+    && fieldMs >= sessionMs
+    && fieldMs <= nowMs
+    && nowMs - fieldMs <= freshnessWindowMs;
+}
+
 function nearLimitFromCurrentData(car, at) {
   if (!car.session) return false;
   const remaining = Number(car.snapshot.time_to_full_charge);
@@ -82,7 +101,12 @@ function nearLimitFromCurrentData(car, at) {
   const limit = Number(car.snapshot.charge_limit_soc);
   const etaFresh = isFresh(car.field_updated_at.time_to_full_charge, at, car.session.started_at);
   const batteryFresh = isFresh(car.field_updated_at.battery_level, at, car.session.started_at);
-  const remainingIsNear = etaFresh && Number.isFinite(remaining) && remaining > 0 && remaining <= 0.25;
+  const batteryIsInFinalBand = batteryFresh
+    && Number.isFinite(battery) && Number.isFinite(limit)
+    && battery >= limit - 10 && battery < limit;
+  const remainingIsNear = etaFresh
+    && batteryIsInFinalBand
+    && Number.isFinite(remaining) && remaining > 0 && remaining <= 0.25;
   const batteryIsNear = !etaFresh
     && batteryFresh
     && Number.isFinite(battery) && Number.isFinite(limit)
@@ -117,6 +141,9 @@ export class ChargingTracker {
       const normalized = String(value || "").toLowerCase();
       car.charging_state = normalized;
       if (normalized === "charging" && !car.session) {
+        for (const processField of completedProcessFields) {
+          delete car.snapshot[processField];
+        }
         for (const sessionField of sessionFields) {
           if (!isFresh(car.field_updated_at[sessionField], at, at)) {
             delete car.snapshot[sessionField];
@@ -154,7 +181,11 @@ export class ChargingTracker {
     const processId = String(process.id);
     const car = this.cars.get(id) || initialCar();
     this.cars.set(id, car);
-    Object.assign(car.snapshot, processSnapshot(process), { updated_at: at });
+    const databaseSnapshot = processSnapshot(process);
+    Object.assign(car.snapshot, databaseSnapshot, { updated_at: at });
+    if (databaseSnapshot.battery_level !== null) {
+      car.field_updated_at.battery_level = at;
+    }
 
     if (!process.end_at) {
       if (car.process?.id === processId) return [];
@@ -193,7 +224,15 @@ export class ChargingTracker {
   }
 
   pendingEvents() {
-    return [...this.pendingEventsByKey.values()].map((event) => ({ ...event, snapshot: { ...event.snapshot } }));
+    return [...this.pendingEventsByKey.values()].map((event) => ({
+      ...event,
+      snapshot: {
+        ...event.snapshot,
+        ...(event.type === "completed"
+          ? {}
+          : this.cars.get(String(event.carId))?.snapshot || {})
+      }
+    }));
   }
 
   acknowledge(event) {
@@ -214,8 +253,23 @@ export class ChargingTracker {
         && car.process.completed_sent);
     }
     if (!car?.session || car.session.id !== event.sessionId || car.charging_state !== "charging") return false;
-    if (event.type === "started") return true;
+    if (event.type === "started") {
+      return Number.isFinite(Number(car.snapshot.battery_level))
+        && isFreshSinceSession(
+          car.field_updated_at.battery_level,
+          at,
+          car.session.started_at
+        );
+    }
     return event.type === "near_limit" && nearLimitFromCurrentData(car, at);
+  }
+
+  shouldWait(event) {
+    if (event?.type !== "started" || !event.carId || !event.sessionId) return false;
+    const car = this.cars.get(String(event.carId));
+    return Boolean(car?.session
+      && car.session.id === event.sessionId
+      && car.charging_state === "charging");
   }
 
   toJSON() {

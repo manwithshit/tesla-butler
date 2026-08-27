@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="420" viewBox="0 0 1200 420"
+     role="img" aria-labelledby="title desc">
+  <title id="title">特斯拉省钱小票</title>
+  <desc id="desc">把本机 TeslaMate 数据变成飞书里的行程小结、充电提醒和人民币账单。</desc>
+
+  <rect width="1200" height="420" rx="28" fill="#08090B"/>
+  <path d="M0 354H1200" stroke="#20242A"/>
+
+  <g id="title-block" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+    <text x="62" y="64" fill="#949BA8" font-size="18" font-weight="600" letter-spacing="2">LOCAL TESLAMATE COMPANION</text>
+    <text x="58" y="145" fill="#F4F1E8" font-size="64" font-weight="760">特斯拉省钱小票</text>
+    <text x="62" y="201" fill="#C8CDD4" font-size="29">把本机 TeslaMate 数据，变成飞书里的</text>
+    <text x="62" y="246" fill="#F4F1E8" font-size="32" font-weight="650">行程小结 · 充电提醒 · 人民币账单</text>
+  </g>
+
+  <g id="route-motif">
+    <path d="M62 302 C132 269 178 337 249 304 S367 273 430 307 S536 334 646 288"
+          fill="none" stroke="#343A42" stroke-width="12" stroke-linecap="round"/>
+    <path d="M62 302 C132 269 178 337 249 304 S367 273 430 307"
+          fill="none" stroke="#4DB47B" stroke-width="5" stroke-linecap="round"/>
+    <path d="M430 307 C500 342 544 326 646 288"
+          fill="none" stroke="#E82127" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="62" cy="302" r="10" fill="#08090B" stroke="#4DB47B" stroke-width="5"/>
+    <circle cx="430" cy="307" r="7" fill="#E82127"/>
+    <circle cx="646" cy="288" r="10" fill="#08090B" stroke="#E82127" stroke-width="5"/>
+  </g>
+
+  <text x="62" y="388" fill="#777F8A" font-size="18" letter-spacing="1.4"
+        font-family="ui-monospace, SFMono-Regular, Menlo, monospace">LOCAL-FIRST  /  SELF-HOSTED  /  READ-ONLY DATABASE ACCESS</text>
+
+  <g id="receipt" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+    <rect x="748" y="34" width="394" height="352" rx="22" fill="#121419" stroke="#30353D" stroke-width="2"/>
+    <circle cx="748" cy="190" r="13" fill="#08090B"/>
+    <circle cx="1142" cy="190" r="13" fill="#08090B"/>
+
+    <rect x="782" y="67" width="144" height="30" rx="15" fill="#E82127"/>
+    <text x="854" y="88" fill="#FFFFFF" font-size="16" font-weight="700" text-anchor="middle" letter-spacing="1">LOCAL RECEIPT</text>
+    <circle cx="1090" cy="82" r="7" fill="#4DB47B"/>
+    <text x="1070" y="88" fill="#949BA8" font-size="16" text-anchor="end">READY</text>
+
+    <text x="782" y="137" fill="#F4F1E8" font-size="26" font-weight="700">一段行程，一张小票</text>
+    <path d="M782 163H1108" stroke="#4A4F58" stroke-width="2" stroke-dasharray="7 8"/>
+
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">
+      <text x="782" y="204" fill="#777F8A">FACT SOURCE</text>
+      <text x="1108" y="204" fill="#F4F1E8" text-anchor="end">PostgreSQL</text>
+      <text x="782" y="243" fill="#777F8A">LOW-LATENCY SIGNAL</text>
+      <text x="1108" y="243" fill="#F4F1E8" text-anchor="end">MQTT</text>
+      <text x="782" y="282" fill="#777F8A">LOCAL WORKER</text>
+      <text x="1108" y="282" fill="#4DB47B" text-anchor="end">READ ONLY</text>
+    </g>
+
+    <path d="M782 309H1108" stroke="#4A4F58" stroke-width="2" stroke-dasharray="7 8"/>
+    <text x="782" y="348" fill="#F4F1E8" font-size="22" font-weight="650">TeslaMate</text>
+    <path d="M914 341H986" stroke="#E82127" stroke-width="3" stroke-linecap="round"/>
+    <path d="M976 332L987 341L976 350" fill="none" stroke="#E82127" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="1108" y="348" fill="#F4F1E8" font-size="22" font-weight="650" text-anchor="end">飞书</text>
+  </g>
+</svg>

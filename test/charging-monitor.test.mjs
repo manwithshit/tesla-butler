@@ -1,7 +1,37 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ChargingTracker } from "../src/charging.mjs";
-import { createChargingDatabaseMonitor } from "../src/charging-monitor.mjs";
+import { createChargingDatabaseMonitor, deliverPendingChargingEvents } from "../src/charging-monitor.mjs";
+
+test("an MQTT charging start stays pending until the current session battery arrives", async () => {
+  const sent = [];
+  const tracker = new ChargingTracker();
+  tracker.update("1", "battery_level", 97, "2026-08-25T00:59:59Z");
+  tracker.update("1", "charging_state", "Charging", "2026-08-25T01:00:00Z");
+  const dependencies = {
+    tracker,
+    getRuntimeState: async () => ({ chat_id: "chat" }),
+    saveState: async () => {},
+    sendEvent: async (_chatId, event) => sent.push(event)
+  };
+
+  const waiting = await deliverPendingChargingEvents({
+    ...dependencies,
+    at: "2026-08-25T01:00:01Z"
+  });
+  assert.equal(waiting.status, "waiting");
+  assert.equal(tracker.pendingEvents().length, 1);
+  assert.equal(sent.length, 0);
+
+  tracker.update("1", "battery_level", 41, "2026-08-25T01:00:02Z");
+  const delivered = await deliverPendingChargingEvents({
+    ...dependencies,
+    at: "2026-08-25T01:00:03Z"
+  });
+  assert.equal(delivered.status, "delivered");
+  assert.equal(sent[0].snapshot.battery_level, 41);
+  assert.equal(tracker.pendingEvents().length, 0);
+});
 
 test("database monitor delivers a missed charging start once", async () => {
   const sent = [];

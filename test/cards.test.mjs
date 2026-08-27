@@ -311,7 +311,10 @@ test("period report highlights distance, energy and trip cost above an oil-cost 
       service_fee_cny: 8.49,
       all_in_unit_price_cny_per_kwh: 1.39
     },
-    comparisons: calculateFuelComparisons(trips.distance_km, 3.16)
+    comparisons: {
+      ...calculateFuelComparisons(trips.distance_km, 3.16),
+      is_current_day: true
+    }
   }));
   const text = JSON.stringify(card);
   assert.match(text, /9\.4 km/);
@@ -433,7 +436,8 @@ test("vehicle overview hides raw TeslaMate model and trim badges", () => {
 
 test("charging cards clearly describe configured limit and simulation", () => {
   const started = assertCard(buildChargingStatusCard("started", {
-    battery_level: 42,
+    battery_level: 97,
+    start_battery_level: 41,
     charge_limit_soc: 80,
     charger_power: 48.9,
     time_to_full_charge: 0.6
@@ -446,10 +450,11 @@ test("charging cards clearly describe configured limit and simulation", () => {
   }, { isSimulation: true }));
   const startedText = JSON.stringify(started);
   const nearText = JSON.stringify(near);
-  for (const pattern of [/正在充电/, /42%/, /80%/, /48\.9 kW/, /36 分钟/, /模拟数据/]) {
+  for (const pattern of [/正在充电/, /41%/, /80%/, /48\.9 kW/, /36 分钟/, /模拟数据/]) {
     assert.match(startedText, pattern);
   }
-  for (const pattern of [/即将完成充电/, /12 分钟/, /80% 充电上限/, /模拟数据/]) {
+  assert.doesNotMatch(startedText, /97%/);
+  for (const pattern of [/即将完成充电/, /Tesla 当前预估/, /12 分钟/, /80% 充电上限/, /充电功率变化/, /模拟数据/]) {
     assert.match(nearText, pattern);
   }
   assert.doesNotMatch(JSON.stringify(near), /即将充满/);

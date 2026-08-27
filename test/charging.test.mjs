@@ -18,9 +18,31 @@ test("charging tracker emits start and near-limit once per session", () => {
   const started = tracker.update("1", "charging_state", "Charging", "2026-08-25T01:00:04Z");
   assert.deepEqual(started.map((event) => event.type), ["started"]);
 
+  tracker.update("1", "battery_level", 72, "2026-08-25T01:19:59Z");
   const near = tracker.update("1", "time_to_full_charge", 0.25, "2026-08-25T01:20:00Z");
   assert.deepEqual(near.map((event) => event.type), ["near_limit"]);
   assert.equal(tracker.update("1", "battery_level", 78, "2026-08-25T01:21:00Z").length, 0);
+});
+
+test("a charging-start alert waits for this session's battery level and refreshes its queued snapshot", () => {
+  const tracker = new ChargingTracker({
+    cars: {
+      "1": {
+        snapshot: { battery_level: 97, start_battery_level: 64, end_battery_level: 97 },
+        field_updated_at: { battery_level: "2026-08-25T00:59:59Z" },
+        charging_state: "complete"
+      }
+    }
+  });
+  const [started] = tracker.update("1", "charging_state", "Charging", "2026-08-25T01:00:00Z");
+
+  assert.equal(tracker.canSend(started, "2026-08-25T01:00:01Z"), false);
+
+  tracker.update("1", "battery_level", 41, "2026-08-25T01:00:02Z");
+  const [pending] = tracker.pendingEvents();
+  assert.equal(pending.snapshot.battery_level, 41);
+  assert.equal(pending.snapshot.start_battery_level, undefined);
+  assert.equal(tracker.canSend(pending, "2026-08-25T01:00:03Z"), true);
 });
 
 test("charging tracker does not restart a session after a temporary stop", () => {
@@ -41,6 +63,19 @@ test("charging tracker falls back to five percent from configured limit", () => 
   assert.deepEqual(near.map((event) => event.type), ["near_limit"]);
 });
 
+test("a fifteen-minute ETA waits until battery is within ten percent of the configured limit", () => {
+  const tracker = new ChargingTracker();
+  tracker.update("1", "charge_limit_soc", 100, "2026-08-25T01:00:00Z");
+  tracker.update("1", "charging_state", "Charging", "2026-08-25T01:00:01Z");
+  tracker.update("1", "battery_level", 80, "2026-08-25T01:10:00Z");
+
+  assert.equal(tracker.update("1", "time_to_full_charge", 0.25, "2026-08-25T01:10:01Z").length, 0);
+  assert.deepEqual(
+    tracker.update("1", "battery_level", 90, "2026-08-25T01:10:02Z").map((event) => event.type),
+    ["near_limit"]
+  );
+});
+
 test("persisted charging state prevents duplicate pushes after restart", () => {
   const first = new ChargingTracker();
   first.update("1", "charging_state", "Charging", "2026-08-25T01:00:00Z");
@@ -51,10 +86,12 @@ test("persisted charging state prevents duplicate pushes after restart", () => {
 test("a stale ETA from an earlier session cannot trigger a new near-limit alert", () => {
   const tracker = new ChargingTracker();
   tracker.update("1", "time_to_full_charge", 0.1, "2026-08-24T01:00:00Z");
+  tracker.update("1", "charge_limit_soc", 80, "2026-08-25T00:59:59Z");
   const started = tracker.update("1", "charging_state", "Charging", "2026-08-25T01:00:00Z");
   assert.deepEqual(started.map((event) => event.type), ["started"]);
   assert.equal(started[0].snapshot.time_to_full_charge, undefined);
 
+  tracker.update("1", "battery_level", 72, "2026-08-25T01:00:00.500Z");
   const near = tracker.update("1", "time_to_full_charge", 0.1, "2026-08-25T01:00:01Z");
   assert.deepEqual(near.map((event) => event.type), ["near_limit"]);
 });
@@ -63,6 +100,7 @@ test("a queued alert is cancelled when charging has already stopped", () => {
   const tracker = new ChargingTracker();
   tracker.update("1", "charge_limit_soc", 80, "2026-08-25T01:00:00Z");
   const [started] = tracker.update("1", "charging_state", "Charging", "2026-08-25T01:00:01Z");
+  tracker.update("1", "battery_level", 50, "2026-08-25T01:00:02Z");
   assert.equal(tracker.canSend(started, "2026-08-25T01:00:02Z"), true);
 
   tracker.update("1", "charging_state", "Complete", "2026-08-25T01:00:03Z");
@@ -73,6 +111,7 @@ test("near-limit alerts require current-session data that is at most two minutes
   const tracker = new ChargingTracker();
   tracker.update("1", "charge_limit_soc", 80, "2026-08-25T01:00:00Z");
   tracker.update("1", "charging_state", "Charging", "2026-08-25T01:00:01Z");
+  tracker.update("1", "battery_level", 72, "2026-08-25T01:00:01.500Z");
   const [near] = tracker.update("1", "time_to_full_charge", 0.2, "2026-08-25T01:00:02Z");
   assert.equal(tracker.canSend(near, "2026-08-25T01:02:01Z"), true);
   assert.equal(tracker.canSend(near, "2026-08-25T01:02:03Z"), false);
@@ -95,6 +134,7 @@ test("an active TeslaMate charging process emits one start notification and surv
   assert.equal(started[0].snapshot.battery_level, 70);
   assert.equal(started[0].snapshot.charger_power, 48);
   assert.equal(started[0].snapshot.charge_energy_added, 3.2);
+  assert.equal(tracker.canSend(started[0], "2026-08-25T06:36:31Z"), true);
   assert.equal(tracker.reconcileProcess(process, "2026-08-25T06:37:30Z").length, 0);
 
   const restored = new ChargingTracker(tracker.toJSON());
