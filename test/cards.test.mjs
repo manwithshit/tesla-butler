@@ -82,7 +82,7 @@ test("latest trip card names coarse start and end roads without exposing coordin
   assert.match(text, /0\.98 度/);
   assert.match(text, /行程时间.*8月24日 18:00.*18:15/);
   assert.doesNotMatch(text, /出发时间|结束时间/);
-  assert.match(text, /短途.*少急加速.*提前松电门/);
+  assert.doesNotMatch(text, /本次驾驶建议|少急加速|提前松电门/);
   assert.doesNotMatch(text, /先积累|单次路况|单次路程/);
   assert.doesNotMatch(text, /耗电口径|WGS-84|GCJ-02|高德地图|地图底图/);
   assert.doesNotMatch(text, /返回菜单/);
@@ -112,6 +112,38 @@ test("latest trip card treats TeslaMate timestamps without an offset as UTC and 
   }));
 
   assert.match(JSON.stringify(card), /行程时间.*8月25日 16:15.*16:53/);
+});
+
+test("latest trip card hides driving advice when no reliable insight is available", () => {
+  const card = buildLatestTripCard({
+    distance_km: 12.3,
+    duration_min: 28,
+    start_at: "2026-08-27T00:00:00Z",
+    end_at: "2026-08-27T00:28:00Z"
+  }, "img_route", true, { hasEnergyOverlay: true });
+
+  assert.doesNotMatch(JSON.stringify(card), /本次驾驶建议/);
+});
+
+test("latest trip card shows one short fact-backed driving template", () => {
+  const card = buildLatestTripCard({
+    distance_km: 12.3,
+    duration_min: 28,
+    start_at: "2026-08-27T00:00:00Z",
+    end_at: "2026-08-27T00:28:00Z"
+  }, "img_route", true, {
+    advice: {
+      title: "🛣️ 一路丝滑",
+      detail: "这趟开车过程中，车停住的时间一共 2 分钟，平时类似行程约 6 分钟。今天少停了 4 分钟，一路更顺。"
+    }
+  });
+  const text = JSON.stringify(card);
+
+  assert.match(text, /本次驾驶建议/);
+  assert.match(text, /一路丝滑/);
+  assert.match(text, /车停住的时间一共 2 分钟/);
+  assert.match(text, /平时类似行程约 6 分钟/);
+  assert.match(text, /今天少停了 4 分钟/);
 });
 
 test("latest trip card distinguishes a map-generation failure from having no trip", () => {

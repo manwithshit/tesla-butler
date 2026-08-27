@@ -26,6 +26,7 @@ import {
   getLatestTripRoute,
   getPeriodRouteCandidates,
   getPeriodTrips,
+  getTripInsightHistory,
   getVehicleOverview
 } from "./teslamate.mjs";
 import {
@@ -38,6 +39,7 @@ import {
   setRouteImageCacheEntry
 } from "./store.mjs";
 import { selectMainRoute } from "./routes.mjs";
+import { selectTripAdviceForTrip } from "./trip-insights.mjs";
 
 const textActions = new Map([
   ["菜单", "menu"], ["帮助", "menu"],
@@ -180,10 +182,23 @@ function logRouteImage(event) {
   process.stdout.write(`[${new Date().toISOString()}] route_image ${fields.join(" ")}\n`);
 }
 
+async function getTripAdvice(trip) {
+  if (!trip?.segment_ids?.length) return null;
+  try {
+    const advice = selectTripAdviceForTrip(trip, await getTripInsightHistory());
+    process.stdout.write(`[${new Date().toISOString()}] trip_advice code=${advice?.code || "hidden"} baseline_count=${advice?.baseline_count || 0}\n`);
+    return advice;
+  } catch {
+    process.stderr.write(`[${new Date().toISOString()}] trip_advice code=metrics_unavailable baseline_count=0\n`);
+    return null;
+  }
+}
+
 async function makeTripGroupCard(trip) {
-  const [route, receipts] = await Promise.all([
+  const [route, receipts, advice] = await Promise.all([
     trip?.segment_ids?.length ? getDriveGroupRoute(trip.segment_ids) : Promise.resolve([]),
-    getReceiptTotals("month")
+    getReceiptTotals("month"),
+    getTripAdvice(trip)
   ]);
   if (trip) {
     trip.estimated_cost_cny = calculateTripElectricCost(
@@ -212,7 +227,8 @@ async function makeTripGroupCard(trip) {
   });
   return buildLatestTripCard(trip, image.imageKey || null, image.hasRoute, {
     ...image.mapMeta,
-    failureStage: image.failureStage
+    failureStage: image.failureStage,
+    advice
   });
 }
 

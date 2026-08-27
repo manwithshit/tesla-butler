@@ -149,16 +149,6 @@ function chartAxisMaximum(values) {
   return Number((Math.ceil((maximum * 1.15) / step) * step).toPrecision(12));
 }
 
-function tripAdvice(trip, hasEnergyOverlay) {
-  if (!trip) return "完成第一段行程后，这里会给出简短的驾驶评价。";
-  const distance = Number(trip.distance_km);
-  const tripType = Number.isFinite(distance) && distance <= 5
-    ? `本次为 ${distance} km 短途，`
-    : "本次行程已完整记录，";
-  if (!hasEnergyOverlay) return `${tripType}暂无需要特别提醒的驾驶事项。`;
-  return `${tripType}红色高耗段较集中。下次经过同一路段时少急加速、提前松电门。`;
-}
-
 export function buildMenuCard(vehicle = null, options = {}) {
   const now = options.now || new Date();
   const updatedAt = teslaMateDate(vehicle?.updated_at);
@@ -194,6 +184,12 @@ export function buildLatestTripCard(trip, imageKey = null, hasRoute = false, map
     : `¥${Number(trip.estimated_cost_cny).toFixed(2)}`;
   const routeName = `${trip?.start_road || "起点未知"} → ${trip?.end_road || "终点未知"}`;
   const routeFailure = Boolean(hasTrip && mapMeta.failureStage);
+  const advice = mapMeta.advice?.title && mapMeta.advice?.detail
+    ? [{
+        tag: "markdown",
+        content: `**本次驾驶建议**\n${mapMeta.advice.title}\n<font color='grey'>${mapMeta.advice.detail}</font>`
+      }]
+    : [];
   const routeElement = imageKey ? {
     tag: "img", img_key: imageKey,
     alt: { tag: "plain_text", content: hasRoute ? "最近行程路线轨迹" : "暂无完整行程轨迹" },
@@ -218,7 +214,7 @@ export function buildLatestTripCard(trip, imageKey = null, hasRoute = false, map
       field("路线概览", hasTrip ? routeName : "--"),
       field("行程时间", hasTrip ? formatTripTimeRange(trip.start_at, trip.end_at) : "--")
     ] },
-    { tag: "markdown", content: `**本次驾驶建议**\n<font color='grey'>${tripAdvice(trip, Boolean(mapMeta.hasEnergyOverlay))}</font>` }
+    ...advice
   ]);
 }
 

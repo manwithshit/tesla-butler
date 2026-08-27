@@ -195,6 +195,96 @@ export async function getDriveMonitorSnapshot() {
   `, 3_000);
 }
 
+export async function getTripInsightHistory(limit = 50) {
+  const safeLimit = Math.max(1, Math.min(100, Math.trunc(Number(limit) || 50)));
+  return sqlJson(`
+    WITH recent AS (
+      SELECT d.*
+      FROM drives d
+      WHERE d.end_date IS NOT NULL
+      ORDER BY d.end_date DESC
+      LIMIT ${safeLimit}
+    ), drives_ordered AS (
+      SELECT r.*, lag(r.end_date) OVER (PARTITION BY r.car_id ORDER BY r.start_date) AS previous_end
+      FROM recent r
+    ), position_intervals AS (
+      SELECT
+        p.drive_id,
+        p.date AS sample_at,
+        p.id AS sample_id,
+        p.speed::float8 AS speed,
+        lead(p.speed::float8) OVER (PARTITION BY p.drive_id ORDER BY p.date, p.id) AS next_speed,
+        EXTRACT(EPOCH FROM (
+          lead(p.date) OVER (PARTITION BY p.drive_id ORDER BY p.date, p.id) - p.date
+        )) AS seconds,
+        (p.power::float8 + lead(p.power::float8) OVER (
+          PARTITION BY p.drive_id ORDER BY p.date, p.id
+        )) / 2 AS average_power
+      FROM positions p
+      JOIN recent d ON d.id = p.drive_id
+    ), interval_flags AS (
+      SELECT *,
+        CASE WHEN seconds > 0 AND seconds <= 3 AND speed IS NOT NULL AND next_speed IS NOT NULL
+          THEN ((next_speed - speed) / 3.6) / seconds >= 2.0 ELSE false END AS accel_hit,
+        CASE WHEN seconds > 0 AND seconds <= 3 AND speed IS NOT NULL AND next_speed IS NOT NULL
+          THEN ((next_speed - speed) / 3.6) / seconds <= -2.5 ELSE false END AS decel_hit
+      FROM position_intervals
+    ), event_edges AS (
+      SELECT *,
+        lag(accel_hit, 1, false) OVER (PARTITION BY drive_id ORDER BY sample_at, sample_id) AS previous_accel_hit,
+        lead(accel_hit, 1, false) OVER (PARTITION BY drive_id ORDER BY sample_at, sample_id) AS next_accel_hit,
+        lag(decel_hit, 1, false) OVER (PARTITION BY drive_id ORDER BY sample_at, sample_id) AS previous_decel_hit,
+        lead(decel_hit, 1, false) OVER (PARTITION BY drive_id ORDER BY sample_at, sample_id) AS next_decel_hit
+      FROM interval_flags
+    ), metrics AS (
+      SELECT
+        drive_id,
+        COALESCE(sum(seconds) FILTER (WHERE seconds > 0 AND seconds <= 3), 0) AS observed_seconds,
+        COALESCE(sum(seconds) FILTER (
+          WHERE seconds > 0 AND seconds <= 3 AND speed = 0 AND next_speed = 0
+        ), 0) AS stopped_seconds,
+        count(*) FILTER (WHERE accel_hit AND next_accel_hit AND NOT previous_accel_hit) AS strong_accel_count,
+        count(*) FILTER (WHERE decel_hit AND next_decel_hit AND NOT previous_decel_hit) AS strong_decel_count,
+        sum(greatest(average_power, 0) * seconds / 3600) FILTER (
+          WHERE seconds > 0 AND seconds <= 10 AND average_power IS NOT NULL
+        ) AS drawn_kwh,
+        sum(greatest(-average_power, 0) * seconds / 3600) FILTER (
+          WHERE seconds > 0 AND seconds <= 10 AND average_power IS NOT NULL
+        ) AS regenerated_kwh
+      FROM event_edges
+      GROUP BY drive_id
+    ), result AS (
+      SELECT
+        d.id, d.car_id, d.start_date AS start_at, d.end_date AS end_at,
+        round(d.distance::numeric, 2) AS distance_km,
+        d.duration_min,
+        EXTRACT(EPOCH FROM (d.end_date - d.start_date)) AS duration_seconds,
+        sp.latitude::float8 AS start_lat, sp.longitude::float8 AS start_lng,
+        ep.latitude::float8 AS end_lat, ep.longitude::float8 AS end_lng,
+        EXISTS (
+          SELECT 1 FROM charging_processes cp
+          WHERE d.previous_end IS NOT NULL
+            AND cp.car_id = d.car_id
+            AND cp.start_date >= d.previous_end
+            AND cp.start_date <= d.start_date
+        ) AS charging_between,
+        COALESCE(m.observed_seconds, 0) AS observed_seconds,
+        COALESCE(m.stopped_seconds, 0) AS stopped_seconds,
+        COALESCE(m.strong_accel_count, 0) AS strong_accel_count,
+        COALESCE(m.strong_decel_count, 0) AS strong_decel_count,
+        m.drawn_kwh,
+        m.regenerated_kwh,
+        d.ascent::float8 AS ascent_m
+      FROM drives_ordered d
+      LEFT JOIN positions sp ON sp.id = d.start_position_id
+      LEFT JOIN positions ep ON ep.id = d.end_position_id
+      LEFT JOIN metrics m ON m.drive_id = d.id
+    )
+    SELECT COALESCE(json_agg(row_to_json(result) ORDER BY start_at), '[]'::json)
+    FROM result;
+  `, 15_000);
+}
+
 export async function getDriveGroup(driveIds, options = {}) {
   const ids = driveIdsSql(driveIds);
   const segments = await sqlJson(`
