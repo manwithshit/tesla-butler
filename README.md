@@ -8,15 +8,15 @@
 
 > 当前运行边界：生产采集与飞书 Worker 已迁移到 M1。M5 只保留为维护环境，TeslaMate、PostgreSQL、Mosquitto、Grafana 和 Worker 均应保持停止。
 
-## 真实卡片，已经过隐私处理
+## 真实手机截图
 
-下面四张均为真实飞书卡片截图，不是概念图。公开版本裁掉了飞书界面，并遮挡了个人标识、位置、路线地图和不需要公开的文本；金额与产品结果没有改写。
+下面四张均为手机里的真实飞书截图，不是概念图。仓库直接使用用户提供的原始 PNG 文件，没有裁剪、缩放、遮挡或改写产品结果。
 
 | 行程小结 | 车辆概览 |
 | --- | --- |
-| <img src="./assets/readme/trip-summary.png" alt="经过隐私处理的真实行程小结：展示行程电费、耗电、里程、时长和驾驶建议，路线地图已遮挡"> | <img src="./assets/readme/vehicle-overview.png" alt="经过隐私处理的真实车辆概览：展示电量、预计续航、总里程和本月行驶汇总"> |
+| <img src="./assets/readme/trip-summary.png" alt="手机原始截图中的真实行程小结：展示行程电费、耗电、里程、时长、路线地图和驾驶建议"> | <img src="./assets/readme/vehicle-overview.png" alt="手机原始截图中的真实车辆概览：展示电量、预计续航、总里程和本月行驶汇总"> |
 | **机器人菜单与充电入口** | **本周小结** |
-| <img src="./assets/readme/bot-menu.png" alt="经过隐私处理的真实飞书机器人菜单：提供行程、车辆、周账单、月账单和充电账单入口"> | <img src="./assets/readme/weekly-report.png" alt="经过隐私处理的真实周期小结：展示累计里程、耗电、行程电费和多档油车费用对比"> |
+| <img src="./assets/readme/bot-menu.png" alt="手机原始截图中的真实飞书机器人菜单：提供行程、车辆、周账单、月账单和充电账单入口"> | <img src="./assets/readme/weekly-report.png" alt="手机原始截图中的真实周期小结：展示累计里程、耗电、行程电费和多档油车费用对比"> |
 
 ## 它能做什么
 
