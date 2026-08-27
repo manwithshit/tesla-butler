@@ -10,13 +10,36 @@
 
 ## 真实手机截图
 
-下面四张均为手机里的真实飞书截图，不是概念图。仓库直接使用用户提供的原始 PNG 文件，没有裁剪、缩放、遮挡或改写产品结果。
+下面五张均为手机里的真实飞书截图，不是概念图。前四张直接使用用户提供的原始 PNG；充电截图仅对 VIN 行做必要遮挡。所有图片均未裁剪或缩放，产品结果没有改写。
 
-| 行程小结 | 车辆概览 |
-| --- | --- |
-| <img src="./assets/readme/trip-summary.png" alt="手机原始截图中的真实行程小结：展示行程电费、耗电、里程、时长、路线地图和驾驶建议"> | <img src="./assets/readme/vehicle-overview.png" alt="手机原始截图中的真实车辆概览：展示电量、预计续航、总里程和本月行驶汇总"> |
-| **机器人菜单与充电入口** | **本周小结** |
-| <img src="./assets/readme/bot-menu.png" alt="手机原始截图中的真实飞书机器人菜单：提供行程、车辆、周账单、月账单和充电账单入口"> | <img src="./assets/readme/weekly-report.png" alt="手机原始截图中的真实周期小结：展示累计里程、耗电、行程电费和多档油车费用对比"> |
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="./assets/readme/trip-summary.png" alt="手机原始截图中的真实行程小结：展示行程电费、耗电、里程、时长、路线地图和驾驶建议"><br>
+      <sub>🧾 <strong>行程小结</strong><br>一段完整行程的费用、能耗、里程与驾驶建议</sub>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="./assets/readme/charging-status.jpg" alt="真实充电账单识别截图：收到充电账单后识别费用与电量，VIN 已遮挡"><br>
+      <sub>⚡ <strong>充电账单识别</strong><br>识别费用与电量，再返回待确认卡片</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="./assets/readme/vehicle-overview.png" alt="手机原始截图中的真实车辆概览：展示电量、预计续航、总里程和本月行驶汇总"><br>
+      <sub>🚗 <strong>车辆概览</strong><br>当前电量、预计续航与本月行驶统计</sub>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="./assets/readme/weekly-report.png" alt="手机原始截图中的真实周期小结：展示累计里程、耗电、行程电费和多档油车费用对比"><br>
+      <sub>📊 <strong>本周小结</strong><br>周期里程、电费与油车费用对比</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" colspan="2">
+      <img src="./assets/readme/bot-menu.png" width="48%" alt="手机原始截图中的真实飞书机器人菜单：提供行程、车辆、周账单、月账单和充电账单入口"><br>
+      <sub>🧭 <strong>功能菜单</strong><br>快速查询行程、车辆与周/月账单</sub>
+    </td>
+  </tr>
+</table>
 
 ## 它能做什么
 
