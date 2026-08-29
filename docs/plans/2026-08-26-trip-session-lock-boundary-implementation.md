@@ -25,6 +25,15 @@ The corrective vertical slices are:
 - [x] RED→GREEN: charging finalization waits for the currently active database segment to be absorbed.
 - [x] Add aggregate-only trip state transition evidence to Worker logs.
 
+## 2026-08-29 missed-door follow-up
+
+- [x] RED→GREEN: a fresh lock can finalize only an existing parked, unsent session when the door edge was missed.
+- [x] RED→GREEN: no session, active driving, retained values and late locks remain no-ops.
+- [x] RED→GREEN: an active drive during the 45-second parallel confirmation cancels the boundary and keeps the session merged.
+- [x] RED→GREEN: stale incomplete door candidates cannot block a valid parked lock fallback.
+- [x] RED→GREEN: inactivity changes from 60 to 30 minutes and is anchored to PostgreSQL `parked_at`.
+- [x] RED→GREEN: unrelated MQTT changes cannot postpone the timeout.
+
 ---
 
 ## File map

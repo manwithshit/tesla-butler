@@ -1,7 +1,8 @@
 export const tripBoundaryDefaults = Object.freeze({
   finalizationDelayMs: 45_000,
-  inactivityTimeoutMs: 60 * 60 * 1_000,
+  inactivityTimeoutMs: 30 * 60 * 1_000,
   boundarySignalToleranceMs: 10_000,
+  parallelLockWindowMs: 10 * 60 * 1_000,
   pollMs: 15_000
 });
 
@@ -105,6 +106,26 @@ function finalizeFromCandidate(session) {
   return true;
 }
 
+function finalizeFromParallelLock(session, at) {
+  const parkedAt = timeMs(session?.parked_at);
+  const lockedAt = timeMs(at);
+  if (
+    !session
+    || session.phase === "driving"
+    || session.phase === "finalizing"
+    || session.segment_ids.length === 0
+    || parkedAt === null
+    || lockedAt === null
+    || lockedAt < parkedAt - tripBoundaryDefaults.boundarySignalToleranceMs
+    || lockedAt - parkedAt > tripBoundaryDefaults.parallelLockWindowMs
+  ) return false;
+  session.phase = "finalizing";
+  session.finalization_reason = "locked_parallel";
+  session.finalize_at = plusMs(at, tripBoundaryDefaults.finalizationDelayMs);
+  session.last_event_at = at;
+  return true;
+}
+
 export function summarizeTripState(state) {
   const session = state?.session || null;
   const candidate = session?.boundary_candidate || null;
@@ -138,6 +159,20 @@ export class TripSessionTracker {
         0,
         ...completed.map((drive) => Number(drive.id) || 0)
       );
+    }
+    if (
+      snapshot?.active
+      && this.state.session?.phase === "finalizing"
+      && this.state.session.finalization_reason === "locked_parallel"
+      && timeMs(snapshot.active.start_at) !== null
+      && timeMs(this.state.session.finalize_at) !== null
+      && timeMs(snapshot.active.start_at) <= timeMs(this.state.session.finalize_at)
+    ) {
+      this.state.session.phase = "driving";
+      this.state.session.active_started_at = snapshot.active.start_at || at;
+      this.state.session.finalize_at = null;
+      this.state.session.finalization_reason = null;
+      this.state.session.boundary_candidate = null;
     }
     if (
       snapshot?.active
@@ -210,8 +245,8 @@ export class TripSessionTracker {
       && this.state.session
       && !["driving", "finalizing"].includes(this.state.session.phase)
       && timeMs(at) !== null
-      && timeMs(this.state.session.last_event_at) !== null
-      && timeMs(at) - timeMs(this.state.session.last_event_at) >= tripBoundaryDefaults.inactivityTimeoutMs
+      && timeMs(this.state.session.parked_at) !== null
+      && timeMs(at) - timeMs(this.state.session.parked_at) >= tripBoundaryDefaults.inactivityTimeoutMs
     ) {
       this.state.session.finalization_reason = "inactivity_timeout";
       this.queueCurrentSession();
@@ -262,10 +297,16 @@ export class TripSessionTracker {
       field === "locked"
       && previous === false
       && value === true
-      && session.boundary_candidate?.door_closed_at
     ) {
-      session.boundary_candidate.locked_at = at;
-      if (session.phase !== "driving") finalizeFromCandidate(session);
+      if (session.boundary_candidate?.door_closed_at) {
+        session.boundary_candidate.locked_at = at;
+        if (
+          session.phase !== "driving"
+          && !finalizeFromCandidate(session)
+        ) finalizeFromParallelLock(session, at);
+      } else {
+        finalizeFromParallelLock(session, at);
+      }
     }
     return true;
   }

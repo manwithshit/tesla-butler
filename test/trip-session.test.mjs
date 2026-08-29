@@ -229,12 +229,63 @@ test("retained locked true only initializes the parked baseline", () => {
   assert.deepEqual(tracker.pendingEvents(), []);
 });
 
-test("a lock without the door sequence does not finalize", () => {
+test("a lock edge without an existing trip session is a no-op", () => {
+  const tracker = initializedTracker();
+  tracker.observeVehicleSignal("locked", false, at("10:20:00"), { retained: true });
+  tracker.observeVehicleSignal("locked", true, at("10:20:03"));
+
+  assert.equal(tracker.toJSON().session, null);
+  assert.deepEqual(tracker.pendingEvents(), []);
+});
+
+test("a fresh lock finalizes an existing parked unsent trip when the door edge was missed", () => {
   const tracker = parkedTracker();
   baselineUnlockedAndDoorClosed(tracker);
   tracker.observeVehicleSignal("locked", true, at("10:20:03"));
 
+  assert.equal(tracker.toJSON().session.phase, "finalizing");
+  assert.equal(tracker.toJSON().session.finalization_reason, "locked_parallel");
+  assert.deepEqual(tracker.pendingEvents(), []);
+  tracker.reconcile({ completed: [completedDrive(10)], active: null }, at("10:20:48"));
+  tracker.reconcile({ completed: [completedDrive(10)], active: null }, at("10:21:03"));
+  assert.equal(tracker.pendingEvents().length, 1);
+  assert.equal(tracker.pendingEvents()[0].reason, "locked_parallel");
+});
+
+test("driving resumed during parallel-lock confirmation keeps the same trip", () => {
+  const tracker = parkedTracker();
+  baselineUnlockedAndDoorClosed(tracker);
+  tracker.observeVehicleSignal("locked", true, at("10:20:03"));
+  tracker.reconcile({
+    completed: [completedDrive(10)],
+    active: { id: 11, start_at: at("10:20:30") }
+  }, at("10:20:30"));
+
+  assert.equal(tracker.toJSON().session.phase, "driving");
+  assert.deepEqual(tracker.toJSON().session.segment_ids, [10]);
+  assert.deepEqual(tracker.pendingEvents(), []);
+});
+
+test("a stale incomplete door candidate cannot block a valid parked lock fallback", () => {
+  const tracker = initializedTracker();
+  tracker.reconcile({ completed: [], active: activeDrive(10) }, at("10:00:00"));
+  baselineUnlockedAndDoorClosed(tracker);
+  tracker.observeVehicleSignal("driver_front_door_open", true, at("10:10:00"));
+  tracker.observeVehicleSignal("driver_front_door_open", false, at("10:10:01"));
+  tracker.reconcile({ completed: [completedDrive(10)], active: null }, at("10:20:01"));
+  tracker.observeVehicleSignal("locked", true, at("10:20:03"));
+
+  assert.equal(tracker.toJSON().session.phase, "finalizing");
+  assert.equal(tracker.toJSON().session.finalization_reason, "locked_parallel");
+});
+
+test("a lock edge long after parking does not use the fast parallel boundary", () => {
+  const tracker = parkedTracker();
+  baselineUnlockedAndDoorClosed(tracker);
+  tracker.observeVehicleSignal("locked", true, at("10:30:01"));
+
   assert.equal(tracker.toJSON().session.phase, "parked");
+  assert.equal(tracker.toJSON().session.finalization_reason, null);
   assert.deepEqual(tracker.pendingEvents(), []);
 });
 
@@ -248,12 +299,12 @@ test("a door sequence without a new lock does not finalize", () => {
   assert.deepEqual(tracker.pendingEvents(), []);
 });
 
-test("an unlocked stop followed by driving within one hour stays one session", () => {
+test("an unlocked stop followed by driving within thirty minutes stays one session", () => {
   const tracker = parkedTracker();
   tracker.reconcile({
     completed: [completedDrive(10)],
-    active: { id: 11, start_at: at("10:50:00") }
-  }, at("10:50:00"));
+    active: { id: 11, start_at: at("10:49:59") }
+  }, at("10:49:59"));
 
   assert.equal(tracker.toJSON().session.phase, "driving");
   assert.deepEqual(tracker.toJSON().session.segment_ids, [10]);
@@ -300,9 +351,19 @@ test("a completed segment and resumed active drive in one poll remain driving", 
   assert.deepEqual(tracker.toJSON().session.segment_ids, [10]);
 });
 
-test("one hour without activity queues the parked trip", () => {
+test("thirty minutes parked without a continuation queues the trip", () => {
   const tracker = parkedTracker();
-  tracker.reconcile({ completed: [completedDrive(10)], active: null }, at("11:20:00"));
+  tracker.reconcile({ completed: [completedDrive(10)], active: null }, at("10:50:00"));
+
+  assert.equal(tracker.pendingEvents().length, 1);
+  assert.equal(tracker.pendingEvents()[0].reason, "inactivity_timeout");
+});
+
+test("ignored MQTT changes cannot postpone the parked timeout", () => {
+  const tracker = parkedTracker();
+  baselineUnlockedAndDoorClosed(tracker);
+  tracker.observeVehicleSignal("driver_front_door_open", true, at("10:49:00"));
+  tracker.reconcile({ completed: [completedDrive(10)], active: null }, at("10:50:00"));
 
   assert.equal(tracker.pendingEvents().length, 1);
   assert.equal(tracker.pendingEvents()[0].reason, "inactivity_timeout");
@@ -329,15 +390,15 @@ test("a newly completed continuation is absorbed before the parked timeout is ev
   assert.equal(tracker.toJSON().session.last_event_at, at("08:58:12"));
 });
 
-test("recovered database segments one hour apart form separate sessions", () => {
+test("recovered database segments thirty minutes apart form separate sessions", () => {
   const tracker = new TripSessionTracker({ initialized: true, last_processed_drive_id: 8 });
   tracker.reconcile({
     completed: [
       completedDrive(9, "10:00:00", "10:20:00"),
-      completedDrive(10, "11:20:00", "11:30:00")
+      completedDrive(10, "10:50:00", "11:00:00")
     ],
     active: null
-  }, at("11:30:01"));
+  }, at("11:00:01"));
 
   assert.deepEqual(tracker.pendingEvents().map((event) => event.segment_ids), [[9]]);
   assert.deepEqual(tracker.toJSON().session.segment_ids, [10]);

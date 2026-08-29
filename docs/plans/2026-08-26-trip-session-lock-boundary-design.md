@@ -10,7 +10,7 @@
 - MQTT 只提供 `locked`、`driver_front_door_open` 和既有充电状态变化等边界信号。
 - 行驶中的自动落锁不构成行程结束。
 - MQTT retained/current 消息只建立 baseline，不制造边沿事件。
-- 门或锁消息缺失时宁可延迟合并，也不误拆分；充电开始和一小时无活动负责兜底。
+- 完整门锁序列仍是优先边界；驾驶门消息缺失时，受限的新落锁并行路径负责补偿，充电开始和停车 30 分钟负责兜底。
 - 所有状态变化、segment ids、pending event、sent key 和最后活动时间均写入现有本地 runtime state。
 - 不在日志、文档或持久化新增精确坐标、车辆标识、收件标识或凭证。
 
@@ -65,19 +65,19 @@ pending event 只保存 `segment_ids` 和幂等 key。发送时再从 PostgreSQL
 2. 新 completed drive 写入当前 session 的 `segment_ids`，状态进入 `parked`。
 3. `driver_front_door_open` 的 `false → true` 记录持久化候选并把已停车状态推进到 `door_open`。
 4. 随后的 `true → false` 记录候选关门时间并把已停车状态推进到 `door_closed`。
-5. 只有门序列完成后出现新的 `locked false → true`，才补齐候选落锁时间。
+5. 门序列完成后出现新的 `locked false → true`，补齐优先候选落锁时间。
 6. 若 MQTT 边沿早于 PostgreSQL 的 completed 可见性，候选在 `driving` 中只缓存、不结束；即使 active 暂时消失，只要对应 completed 尚未吸收，也不得排队。数据库段落盘后，候选开门时间必须位于最后段结束后，允许最多 10 秒的提交时钟容差，才进入 `finalizing`。更早的候选会被清除。
 7. `finalize_at` 固定为落锁时间加 45 秒。
 8. trip DB 每 15 秒检查一次；达到 `finalize_at`、数据库已经没有 active drive 且所有 completed 段已吸收后，创建一个 pending event 并尝试发送，因此正常推送窗口为确认离车后约 45–60 秒。
 
-单独落锁、单独开关门、重复相同值以及行驶中的落锁均不会结束行程。
+若门事件漏失，新的 `locked false → true` 仅在 PostgreSQL 已确认无 active drive、session 已有 completed segment、尚未发送且落锁不晚于 `parked_at` 10 分钟时，进入 `locked_parallel` 确认窗口。它只能结束已有行程，不能创建行程；没有 session、行驶中、retained、重复值或更晚的落锁均忽略。确认窗口固定 45 秒，其间若数据库出现新的 active drive，则撤销并行边界并继续原 session。完整门开关锁序列的既有语义不变。
 
 ### 未落锁续驾与超时
 
 - `parked` 后再次出现 active drive，且尚未确认真实边界，则恢复 `driving` 并继续累计同一 session；active drive 无条件压制 parked 超时，避免长行程被上一段停车时间截断。
 - 恢复驾驶时清除未完成的旧门锁候选，避免后续缺失门事件时误用上一次停车信号。
-- 真实字段变化、驾驶变化或充电变化会更新 `last_event_at`；重复相同 MQTT 值不会延长超时。
-- `parked` 后连续一小时没有驾驶、充电或相关字段变化，直接把已有 segments 排入 pending 并结束 session。此时数据库已稳定，无需再增加 45 秒。
+- `last_event_at` 保留为诊断状态，但超时只锚定 PostgreSQL 的 `parked_at`；门锁噪声、在线/离线变化和其他 MQTT 字段均不能推迟兜底。
+- `parked` 后满 30 分钟仍没有 active drive，直接把已有 segments 排入 pending 并结束 session。此时数据库已稳定，无需再增加 45 秒。
 
 ### 充电边界
 
@@ -114,7 +114,7 @@ pending event 只保存 `segment_ids` 和幂等 key。发送时再从 PostgreSQL
 ## 数据库聚合
 
 - 手动“上次行程”和周期报表继续使用现有 5 分钟、100 米分组默认值，避免行为回归。
-- 自动 session 的 segments 来自状态机；发送时允许一小时内的 session 聚合，但仍要求相邻端点在 100 米内且期间无充电。
+- 自动 session 的 segments 来自状态机；发送时允许 30 分钟内的 session 聚合，但仍要求相邻端点在 100 米内且期间无充电。
 - 若聚合暂不可用，pending 保留并在下一轮重试，不丢弃行程。
 
 ## 验证边界
