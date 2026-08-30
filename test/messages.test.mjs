@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { handleImage, handleReceiptAction, isImageLikeMessage } from "../src/bot.mjs";
+import { handleImage, handleReceiptAction, handleReceiptMatchAction, isImageLikeMessage } from "../src/bot.mjs";
 
 test("direct image messages are recognized", () => {
   assert.equal(isImageLikeMessage({ message_type: "image", content: "{}" }), true);
@@ -22,6 +22,7 @@ test("receipt image always gets acknowledgement and success feedback", async () 
     downloadMessageImage: async () => "/tmp/receipt.png",
     analyzeChargingReceipt: async () => fields,
     validateReceipt: () => null,
+    getRecentChargingProcesses: async () => [],
     savePendingReceipt: async () => ({ id: "receipt", fields }),
     buildReceiptCard: () => ({ schema: "2.0" }),
     replyText: async (_messageId, text) => feedback.push({ type: "text", text }),
@@ -30,6 +31,55 @@ test("receipt image always gets acknowledgement and success feedback", async () 
   assert.equal(result.status, "success");
   assert.match(feedback[0].text, /已收到/);
   assert.equal(feedback[1].type, "card");
+});
+
+test("receipt image looks up recent charging sessions before saving", async () => {
+  let savedMatch;
+  const fields = { energy_kwh: 20, amount_cny: 30, charged_at: "19:30", confidence: 0.9 };
+  const chargingMatch = { status: "matched", selected_process_id: "10", candidates: [] };
+  const result = await handleImage({ message_id: "om_match", content: "img_match" }, {
+    feedbackAttempts: 1,
+    downloadMessageImage: async () => "/tmp/receipt.png",
+    analyzeChargingReceipt: async () => fields,
+    validateReceipt: () => null,
+    getRecentChargingProcesses: async () => [{ id: 10 }],
+    matchReceiptToChargingProcesses: (actualFields, processes) => {
+      assert.equal(actualFields, fields);
+      assert.equal(processes.length, 1);
+      return chargingMatch;
+    },
+    savePendingReceipt: async ({ chargingMatch: actual }) => {
+      savedMatch = actual;
+      return { id: "receipt", fields, charging_match: actual };
+    },
+    buildReceiptCard: () => ({ schema: "2.0" }),
+    replyText: async () => {},
+    replyCard: async () => {}
+  });
+  assert.equal(result.status, "success");
+  assert.equal(savedMatch, chargingMatch);
+});
+
+test("choosing a charging-session candidate persists it and refreshes the card", async () => {
+  const sent = [];
+  const receipt = { id: "receipt", fields: {}, charging_match: { status: "matched" } };
+  const result = await handleReceiptMatchAction({
+    chat_id: "chat",
+    event_id: "event",
+    receipt_id: "receipt",
+    process_id: "10"
+  }, {
+    selectReceiptChargingMatch: async (receiptId, processId) => {
+      assert.equal(receiptId, "receipt");
+      assert.equal(processId, "10");
+      return receipt;
+    },
+    buildReceiptCard: () => ({ schema: "2.0" }),
+    sendCard: async (_chatId, card) => sent.push(card),
+    sendText: async () => {}
+  });
+  assert.equal(result.status, "matched");
+  assert.equal(sent.length, 1);
 });
 
 test("receipt image gets explicit failure feedback when recognition throws", async () => {

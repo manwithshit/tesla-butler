@@ -30,11 +30,17 @@ export function normalizeReceiptFields(fields, receivedAt = new Date()) {
   const normalized = { ...fields };
   const raw = String(fields?.charged_at || "").trim();
   if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(raw)) {
-    normalized.charged_at = `${shanghaiDateString(receivedAt)} ${raw}`;
-    normalized.charged_at_source = "inferred_received_date";
+    normalized.charged_at = raw;
+    normalized.charged_at_source = fields.charged_at_source || "time_only";
   } else if (/^\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}/.test(raw)) {
     normalized.charged_at = raw.replace("T", " ").replace(/([+-]\d{2}:?\d{2}|Z)$/i, "");
     normalized.charged_at_source = fields.charged_at_source || "explicit";
+    if (!normalized.accounting_at) {
+      normalized.accounting_at = normalized.charged_at;
+      normalized.accounting_at_source = normalized.charged_at_source === "explicit"
+        ? "explicit_receipt"
+        : normalized.charged_at_source;
+    }
   }
   return normalized;
 }
@@ -49,11 +55,79 @@ export function mergeReceiptEnrichment(existingFields, analyzedFields, receivedA
   return normalizeReceiptFields(merged, receivedAt);
 }
 
-export async function savePendingReceipt({ messageId, imagePath, fields }) {
+export function applyReceiptChargingMatch(receipt, match, method = "automatic") {
+  receipt.schema_version = 3;
+  receipt.fields ||= {};
+  const selectedProcessId = match?.selected_process_id === null || match?.selected_process_id === undefined
+    ? null
+    : String(match.selected_process_id);
+  receipt.charging_match = {
+    status: match?.status || "unlinked",
+    selected_process_id: selectedProcessId,
+    method: selectedProcessId ? method : "none",
+    confidence: match?.confidence !== null && match?.confidence !== undefined && Number.isFinite(Number(match.confidence))
+      ? Number(match.confidence)
+      : null,
+    candidates: (match?.candidates || []).map((candidate) => ({ ...candidate }))
+  };
+  if (match?.accounting_at && receipt.fields.accounting_at_source !== "explicit_receipt") {
+    receipt.fields.accounting_at = match.accounting_at;
+    receipt.fields.accounting_at_source = match.accounting_at_source || "matched_session";
+  }
+  return receipt;
+}
+
+export function selectReceiptChargingCandidate(receipt, processId) {
+  const candidate = receipt?.charging_match?.candidates?.find(
+    (item) => String(item.process_id) === String(processId)
+  );
+  if (!candidate) return false;
+  receipt.fields ||= {};
+  receipt.charging_match.status = "matched";
+  receipt.charging_match.selected_process_id = String(candidate.process_id);
+  receipt.charging_match.method = "user_selected";
+  receipt.charging_match.confidence = candidate.score !== null && candidate.score !== undefined && Number.isFinite(Number(candidate.score))
+    ? Number(candidate.score)
+    : null;
+  if (candidate.display_at && receipt.fields.accounting_at_source !== "explicit_receipt") {
+    receipt.fields.accounting_at = candidate.display_at;
+    receipt.fields.accounting_at_source = "matched_session";
+  }
+  return true;
+}
+
+function shanghaiDateTimeString(date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}`;
+}
+
+export function ensureReceiptAccounting(receipt) {
+  receipt.fields ||= {};
+  if (receipt.fields.accounting_at) return receipt;
+  const createdAt = new Date(receipt.created_at);
+  const fallback = Number.isFinite(createdAt.getTime()) ? createdAt : new Date();
+  const timeOnly = String(receipt.fields.charged_at || "").trim().match(/^(\d{1,2}:\d{2})(?::\d{2})?$/);
+  receipt.fields.accounting_at = timeOnly
+    ? `${shanghaiDateString(fallback)} ${timeOnly[1].padStart(5, "0")}`
+    : shanghaiDateTimeString(fallback);
+  receipt.fields.accounting_at_source = "received_date_fallback";
+  return receipt;
+}
+
+export async function savePendingReceipt({ messageId, imagePath, fields, chargingMatch, receivedAt = new Date() }) {
   const store = await readStore();
   const id = opaqueId(messageId);
-  const createdAt = new Date();
-  store.receipts[id] = {
+  const createdAt = new Date(receivedAt);
+  const receipt = {
     id,
     source_message_hash: opaqueId(messageId),
     image_path: imagePath,
@@ -61,8 +135,25 @@ export async function savePendingReceipt({ messageId, imagePath, fields }) {
     fields: normalizeReceiptFields(fields, createdAt),
     created_at: createdAt.toISOString()
   };
+  applyReceiptChargingMatch(receipt, chargingMatch);
+  store.receipts[id] = receipt;
   await writeStore(store);
   return store.receipts[id];
+}
+
+export async function getReceipt(id) {
+  const store = await readStore();
+  return store.receipts[id] || null;
+}
+
+export async function selectReceiptChargingMatch(id, processId) {
+  const store = await readStore();
+  const receipt = store.receipts[id];
+  if (!receipt || receipt.status !== "pending") return null;
+  if (!selectReceiptChargingCandidate(receipt, processId)) return null;
+  receipt.updated_at = new Date().toISOString();
+  await writeStore(store);
+  return receipt;
 }
 
 export async function setReceiptStatus(id, status) {
@@ -70,6 +161,15 @@ export async function setReceiptStatus(id, status) {
   const store = await readStore();
   const receipt = store.receipts[id];
   if (!receipt) return null;
+  if (status === "confirmed") {
+    ensureReceiptAccounting(receipt);
+    if (receipt.charging_match?.status === "needs_confirmation") {
+      receipt.charging_match.status = "unlinked";
+      receipt.charging_match.selected_process_id = null;
+      receipt.charging_match.method = "user_skipped";
+      receipt.charging_match.confidence = null;
+    }
+  }
   receipt.status = status;
   receipt.updated_at = new Date().toISOString();
   await writeStore(store);
@@ -109,7 +209,7 @@ function shanghaiDateString(date) {
 }
 
 function receiptChargedAt(receipt) {
-  const raw = String(receipt.fields?.charged_at || "").trim();
+  const raw = String(receipt.fields?.accounting_at || receipt.fields?.charged_at || "").trim();
   if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(raw)) {
     const time = raw.length === 5 ? `${raw}:00` : raw;
     return new Date(`${shanghaiDateString(new Date(receipt.created_at))}T${time}+08:00`);

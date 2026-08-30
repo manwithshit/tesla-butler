@@ -52,6 +52,39 @@ export async function getLatestChargingProcess() {
   `, 3_000);
 }
 
+export async function getRecentChargingProcesses({ before = new Date(), days = 7, limit = 20 } = {}) {
+  const safeBefore = new Date(before);
+  if (!Number.isFinite(safeBefore.getTime())) throw new Error("invalid charging lookup time");
+  const safeDays = Math.max(1, Math.min(31, Math.trunc(Number(days) || 7)));
+  const safeLimit = Math.max(1, Math.min(50, Math.trunc(Number(limit) || 20)));
+  const beforeIso = safeBefore.toISOString();
+  return sqlJson(`
+    SELECT COALESCE(json_agg(row_to_json(recent) ORDER BY recent.end_at DESC), '[]'::json)
+    FROM (
+      SELECT
+        cp.id,
+        cp.start_date AS start_at,
+        cp.end_date AS end_at,
+        cp.start_battery_level,
+        cp.end_battery_level,
+        COALESCE(cp.charge_energy_added, latest.charge_energy_added) AS charge_energy_added
+      FROM charging_processes cp
+      LEFT JOIN LATERAL (
+        SELECT c.charge_energy_added
+        FROM charges c
+        WHERE c.charging_process_id = cp.id
+        ORDER BY c.date DESC, c.id DESC
+        LIMIT 1
+      ) latest ON true
+      WHERE cp.end_date IS NOT NULL
+        AND cp.end_date <= '${beforeIso}'::timestamptz + interval '10 minutes'
+        AND cp.end_date >= '${beforeIso}'::timestamptz - interval '${safeDays} days'
+      ORDER BY cp.end_date DESC
+      LIMIT ${safeLimit}
+    ) recent;
+  `, 3_000);
+}
+
 export async function ensureTeslaMate() {
   await runFile(config.dockerCli, [...composeArgs, "up", "-d"], {
     cwd: config.root,

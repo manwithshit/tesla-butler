@@ -40,6 +40,20 @@ function matchTime(observations) {
   return { value: null, confidence: null };
 }
 
+function matchDate(observations) {
+  for (const item of observations) {
+    const normalized = String(item.text || "").replace(/[/.]/g, "-");
+    const numericDate = normalized.match(/(20\d{2})-(\d{1,2})-(\d{1,2})/);
+    const chineseDate = String(item.text || "").match(/(20\d{2})年(\d{1,2})月(\d{1,2})日/);
+    const match = numericDate || chineseDate;
+    if (!match) continue;
+    const month = String(match[2]).padStart(2, "0");
+    const day = String(match[3]).padStart(2, "0");
+    return { value: `${match[1]}-${month}-${day}`, confidence: item.confidence };
+  }
+  return { value: null, confidence: null };
+}
+
 function firstValue(...matches) {
   return matches.find((item) => item.value !== null) || { value: null, confidence: null };
 }
@@ -61,7 +75,16 @@ export function parseVisionReceipt(rawObservations) {
   const electricityUnit = matchNumber(observations, /电费\s*[:：]\s*[¥￥]?\s*(\d+(?:\.\d+)?)/);
   const serviceUnit = matchNumber(observations, /服务费\s*[:：]\s*[¥￥]?\s*(\d+(?:\.\d+)?)/);
   const allInUnit = matchNumber(observations, /[¥￥]\s*(\d+(?:\.\d+)?)\s*\/\s*(?:度|kwh)/i);
-  const chargedAt = matchTime(observations);
+  const chargedTime = matchTime(observations);
+  const chargedDate = matchDate(observations);
+  const chargedAt = {
+    value: chargedDate.value && chargedTime.value
+      ? `${chargedDate.value} ${chargedTime.value}`
+      : chargedTime.value,
+    confidence: chargedDate.value && chargedTime.value
+      ? Math.min(chargedDate.confidence, chargedTime.confidence)
+      : chargedTime.confidence
+  };
   const draft = normalizeReceiptResult({
     amount_cny: amount.value,
     energy_kwh: energy.value,

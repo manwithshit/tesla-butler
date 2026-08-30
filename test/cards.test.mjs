@@ -239,6 +239,48 @@ test("receipt confirmation card has one primary action", () => {
   assert.match(JSON.stringify(card), /ignore_receipt/);
 });
 
+test("receipt card explains an automatic charging-session match", () => {
+  const card = assertCard(buildReceiptCard({
+    id: "matched-receipt",
+    fields: { amount_cny: 12.34, energy_kwh: 8, charged_at: "19:30", confidence: 0.98 },
+    charging_match: {
+      status: "matched",
+      candidates: [{ process_id: "101", display_at: "2026-08-29 19:28", energy_kwh: 8.1 }]
+    }
+  }));
+  const text = JSON.stringify(card);
+  assert.match(text, /已匹配车辆充电记录/);
+  assert.match(text, /8月29日 19:28/);
+  assert.match(text, /8\.1 kWh/);
+});
+
+test("receipt card lets the user choose between ambiguous charging sessions", () => {
+  const card = assertCard(buildReceiptCard({
+    id: "ambiguous-receipt",
+    fields: { amount_cny: 12.34, energy_kwh: 8, charged_at: "19:30", confidence: 0.98 },
+    charging_match: {
+      status: "needs_confirmation",
+      candidates: [
+        { process_id: "101", display_at: "2026-08-28 19:28", energy_kwh: 8.1 },
+        { process_id: "102", display_at: "2026-08-29 19:32", energy_kwh: 7.9 }
+      ]
+    }
+  }));
+  const text = JSON.stringify(card);
+  assert.match(text, /请选择对应的车辆充电记录/);
+  assert.equal((text.match(/select_receipt_match/g) || []).length, 2);
+  assert.match(text, /不关联，直接记账/);
+});
+
+test("unlinked receipt card makes the received-date fallback clear", () => {
+  const card = assertCard(buildReceiptCard({
+    id: "unlinked-receipt",
+    fields: { amount_cny: 12.34, energy_kwh: 8, charged_at: "19:30", confidence: 0.98 },
+    charging_match: { status: "unlinked", candidates: [] }
+  }));
+  assert.match(JSON.stringify(card), /只有时间时暂按收到日期归账/);
+});
+
 test("receipt confirmation card separates electricity fee and service fee", () => {
   const card = assertCard(buildReceiptCard({
     id: "fee-breakdown",

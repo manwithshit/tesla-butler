@@ -49,6 +49,15 @@ test("Vision parser handles labels and values split into separate boxes", () => 
   assert.equal(validateReceipt(receipt), null);
 });
 
+test("Vision parser preserves an explicit receipt date with the charging end time", () => {
+  const receipt = parseVisionReceipt([
+    ...observations,
+    { text: "充电日期 2026-08-29", confidence: 0.99, x: 0.06, y: 0.25, width: 0.25, height: 0.03 }
+  ]);
+
+  assert.equal(receipt.charged_at, "2026-08-29 19:29");
+});
+
 test("Apple Vision succeeds without invoking K3", async () => {
   let fallbackCalls = 0;
   const receipt = await analyzeChargingReceipt("/tmp/receipt.png", {

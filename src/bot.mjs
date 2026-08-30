@@ -3,6 +3,7 @@ import path from "node:path";
 import { config, projectPath } from "./config.mjs";
 import { runFile } from "./lib/process.mjs";
 import { analyzeChargingReceipt, validateReceipt } from "./receipt-recognizer.mjs";
+import { matchReceiptToChargingProcesses } from "./receipt-charging-match.mjs";
 import {
   assertCard,
   buildChargingStatusCard,
@@ -26,6 +27,7 @@ import {
   getLatestTripRoute,
   getPeriodRouteCandidates,
   getPeriodTrips,
+  getRecentChargingProcesses,
   getTripInsightHistory,
   getVehicleOverview
 } from "./teslamate.mjs";
@@ -35,6 +37,7 @@ import {
   opaqueId,
   registerChat,
   savePendingReceipt,
+  selectReceiptChargingMatch,
   setReceiptStatus,
   setRouteImageCacheEntry
 } from "./store.mjs";
@@ -377,6 +380,8 @@ export async function handleImage(event, dependencies = {}) {
     downloadMessageImage,
     analyzeChargingReceipt,
     validateReceipt,
+    getRecentChargingProcesses,
+    matchReceiptToChargingProcesses,
     savePendingReceipt,
     buildReceiptCard,
     replyText,
@@ -384,6 +389,7 @@ export async function handleImage(event, dependencies = {}) {
     ...dependencies
   };
   const feedbackAttempts = Math.max(1, dependencies.feedbackAttempts ?? 2);
+  const receivedAt = dependencies.receivedAt || new Date();
   let phase = "acknowledgement";
 
   try {
@@ -409,11 +415,30 @@ export async function handleImage(event, dependencies = {}) {
       );
       return { status: "invalid" };
     }
+    phase = "charging-match";
+    let chargingMatch;
+    try {
+      const processes = await ops.getRecentChargingProcesses({ before: receivedAt, days: 7 });
+      chargingMatch = ops.matchReceiptToChargingProcesses(fields, processes, receivedAt);
+    } catch (error) {
+      const code = error?.code || error?.name || "UNKNOWN";
+      process.stdout.write(`[${new Date().toISOString()}] receipt charging match unavailable message=${opaqueId(event.message_id)} code=${code}\n`);
+      chargingMatch = {
+        status: "unlinked",
+        selected_process_id: null,
+        confidence: null,
+        candidates: [],
+        accounting_at: null,
+        accounting_at_source: null
+      };
+    }
     phase = "save";
     const receipt = await ops.savePendingReceipt({
       messageId: event.message_id,
       imagePath: path.relative(config.root, imagePath),
-      fields
+      fields,
+      chargingMatch,
+      receivedAt
     });
     phase = "success-feedback";
     await retryFeedback(
@@ -439,6 +464,32 @@ export async function handleImage(event, dependencies = {}) {
       throw terminal;
     }
   }
+}
+
+export async function handleReceiptMatchAction(event, dependencies = {}) {
+  const ops = { selectReceiptChargingMatch, buildReceiptCard, sendCard, sendText, ...dependencies };
+  let receipt;
+  try {
+    receipt = await ops.selectReceiptChargingMatch(event.receipt_id, event.process_id);
+  } catch {
+    await retryFeedback(
+      () => ops.sendText(event.chat_id, "关联失败：账单没有更新，请稍后重新点击。", `${event.event_id}:receipt-match-failed`),
+      2
+    );
+    return { status: "failed" };
+  }
+  if (!receipt) {
+    await retryFeedback(
+      () => ops.sendText(event.chat_id, "这条候选充电记录已失效，请重新发送账单图片。", `${event.event_id}:receipt-match-missing`),
+      2
+    );
+    return { status: "missing" };
+  }
+  await retryFeedback(
+    () => ops.sendCard(event.chat_id, ops.buildReceiptCard(receipt), `${event.event_id}:receipt-match`),
+    2
+  );
+  return { status: "matched" };
 }
 
 export async function handleMessageEvent(event) {
@@ -505,6 +556,15 @@ export async function handleCardEvent(event) {
       event_id: event.event_id,
       action,
       receipt_id: value.receipt_id
+    });
+    return;
+  }
+  if (action === "select_receipt_match") {
+    await handleReceiptMatchAction({
+      chat_id: event.chat_id,
+      event_id: event.event_id,
+      receipt_id: value.receipt_id,
+      process_id: value.process_id
     });
   }
 }

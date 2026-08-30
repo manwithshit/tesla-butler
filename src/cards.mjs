@@ -464,6 +464,51 @@ export function buildReceiptCard(receipt) {
   const recognitionTag = fields.recognition_source === "apple_vision"
     ? "本地识别"
     : fields.recognition_source === "k3_fallback" ? "K3 增强识别" : "识别结果";
+  const match = receipt.charging_match;
+  const formatCandidateTime = (value) => {
+    const found = String(value || "").match(/^\d{4}-(\d{2})-(\d{2}) (\d{2}:\d{2})$/);
+    return found ? `${Number(found[1])}月${Number(found[2])}日 ${found[3]}` : "时间未知";
+  };
+  const candidateLabel = (candidate) => {
+    const energy = candidate.energy_kwh === null || candidate.energy_kwh === undefined
+      ? "电量未知"
+      : `${Number(candidate.energy_kwh).toFixed(1)} kWh`;
+    return `${formatCandidateTime(candidate.display_at)} · ${energy}`;
+  };
+  let matchElement = null;
+  if (match?.status === "matched") {
+    const selected = (match.candidates || []).find(
+      (candidate) => String(candidate.process_id) === String(match.selected_process_id)
+    ) || match.candidates?.[0];
+    matchElement = {
+      tag: "column_set", flex_mode: "none", columns: [{
+        tag: "column", background_style: "blue-50", padding: "10px", elements: [{
+          tag: "markdown",
+          content: `**已匹配车辆充电记录**\n${selected ? candidateLabel(selected) : "已确认对应记录"}`
+        }]
+      }]
+    };
+  } else if (match?.status === "needs_confirmation") {
+    const candidates = (match.candidates || []).slice(0, 2);
+    matchElement = {
+      tag: "column_set", flex_mode: "bisect", horizontal_spacing: "10px",
+      columns: candidates.map((candidate) => ({
+        tag: "column", background_style: "grey-50", padding: "8px", vertical_spacing: "6px",
+        elements: [
+          { tag: "markdown", content: "**请选择对应的车辆充电记录**", text_size: "notation" },
+          button(candidateLabel(candidate), "select_receipt_match", {
+            extra: { receipt_id: receipt.id, process_id: String(candidate.process_id) }
+          })
+        ]
+      }))
+    };
+  } else if (match?.status === "unlinked") {
+    matchElement = {
+      tag: "markdown",
+      content: "**暂未找到可靠的车辆充电记录**\n<font color='grey'>仍可直接记账；账单只有时间时暂按收到日期归账。</font>"
+    };
+  }
+  const confirmLabel = match?.status === "needs_confirmation" ? "不关联，直接记账" : "确认记账";
   return cardShell("充电账单待确认", "确认后计入周结和月结", "充电账单待确认", [
     {
       tag: "column_set", flex_mode: "bisect", horizontal_spacing: "12px",
@@ -485,7 +530,8 @@ export function buildReceiptCard(receipt) {
       ]
     }] },
     { tag: "div", fields: [field("充电时间", formatValue(fields.charged_at)), field(confidenceLabel, confidence), field("运营商", formatValue(fields.provider), false)] },
-    buttonRow(button("确认记账", "confirm_receipt", { primary: true, extra: { receipt_id: receipt.id } }), button("忽略", "ignore_receipt", { extra: { receipt_id: receipt.id } }))
+    ...(matchElement ? [matchElement] : []),
+    buttonRow(button(confirmLabel, "confirm_receipt", { primary: true, extra: { receipt_id: receipt.id } }), button("忽略", "ignore_receipt", { extra: { receipt_id: receipt.id } }))
   ], { width: "default", tag: recognitionTag });
 }
 
