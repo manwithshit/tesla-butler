@@ -460,6 +460,18 @@ test("charging cards clearly describe configured limit and simulation", () => {
   assert.doesNotMatch(JSON.stringify(near), /即将充满/);
 });
 
+test("a slow charging estimate is shown as hours and minutes", () => {
+  const card = assertCard(buildChargingStatusCard("started", {
+    start_battery_level: 41,
+    charge_limit_soc: 100,
+    charger_power: 3,
+    time_to_full_charge: 2.83
+  }));
+
+  assert.match(JSON.stringify(card), /约 2 小时 50 分钟/);
+  assert.doesNotMatch(JSON.stringify(card), /170 分钟/);
+});
+
 test("completed charging card reports the actual session and asks for the bill", () => {
   const card = assertCard(buildChargingStatusCard("completed", {
     start_at: "2026-08-25T06:35:49Z",

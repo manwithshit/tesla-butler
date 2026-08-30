@@ -150,7 +150,7 @@ test("veteran advice compares event counts in plain language", () => {
   assert.deepEqual(selectTripAdvice(current, history), {
     code: "veteran",
     title: "🚘 老司机模式",
-    detail: "这趟只有 1 次明显加速，没有明显减速。平时类似行程通常会有 3 次左右，这趟开得更稳。",
+    detail: "这趟系统记录了 1 个明显的车速变化片段，没有出现明显急减速。按同样行驶时长看，近期 3 次同路线通常约 3 个；今天少了约 2 个，整体更稳。",
     baseline_count: 3
   });
 });

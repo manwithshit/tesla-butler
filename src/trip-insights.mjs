@@ -221,15 +221,15 @@ function selectTripAdviceCandidate(current, history = []) {
   ) / number(trip.observed_seconds)));
   const baselineEvents = Math.max(0, Math.round(baselineEventRate * currentObserved));
   if (baselineEvents - currentEvents >= 2) {
-    const acceleration = number(current.strong_accel_count) || 0;
     const deceleration = number(current.strong_decel_count) || 0;
+    const difference = baselineEvents - currentEvents;
     const decelerationText = deceleration === 0
-      ? "没有明显减速"
-      : `${deceleration} 次明显减速`;
+      ? "没有出现明显急减速"
+      : `其中有 ${deceleration} 个明显减速片段`;
     return {
       code: "veteran",
       title: "🚘 老司机模式",
-      detail: `这趟只有 ${acceleration} 次明显加速，${decelerationText}。平时类似行程通常会有 ${baselineEvents} 次左右，这趟开得更稳。`,
+      detail: `这趟系统记录了 ${currentEvents} 个明显的车速变化片段，${decelerationText}。按同样行驶时长看，近期 ${comparable.length} 次同路线通常约 ${baselineEvents} 个；今天少了约 ${difference} 个，整体更稳。`,
       baseline_count: comparable.length
     };
   }

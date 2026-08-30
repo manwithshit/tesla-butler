@@ -325,6 +325,17 @@ function chargeMinutes(value) {
   return Number.isFinite(hours) && hours > 0 ? Math.max(1, Math.round(hours * 60)) : null;
 }
 
+function formatChargingEstimate(value) {
+  const minutes = chargeMinutes(value);
+  if (minutes === null) return "时间估算中";
+  if (minutes < 60) return `约 ${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder === 0
+    ? `约 ${hours} 小时`
+    : `约 ${hours} 小时 ${remainder} 分钟`;
+}
+
 export function buildChargingStatusCard(type, snapshot = {}, options = {}) {
   if (type === "completed") {
     const energy = snapshot.charge_energy_added === null || snapshot.charge_energy_added === undefined
@@ -358,7 +369,6 @@ export function buildChargingStatusCard(type, snapshot = {}, options = {}) {
     ], { width: "default", tag: options.isSimulation ? "模拟数据" : null });
   }
   const nearLimit = type === "near_limit";
-  const minutes = chargeMinutes(snapshot.time_to_full_charge);
   const limit = snapshot.charge_limit_soc === null || snapshot.charge_limit_soc === undefined
     ? "设置上限"
     : `${snapshot.charge_limit_soc}%`;
@@ -367,7 +377,7 @@ export function buildChargingStatusCard(type, snapshot = {}, options = {}) {
     : snapshot.start_battery_level ?? snapshot.battery_level;
   const battery = batteryValue === null || batteryValue === undefined ? "--" : `${batteryValue}%`;
   const power = snapshot.charger_power === null || snapshot.charger_power === undefined ? "暂无" : `${snapshot.charger_power} kW`;
-  const remaining = minutes === null ? "时间估算中" : `${minutes} 分钟`;
+  const remaining = formatChargingEstimate(snapshot.time_to_full_charge);
   const title = nearLimit ? "即将完成充电" : "正在充电";
   const subtitle = nearLimit ? `即将达到 ${limit} 充电上限` : `已开始充电 · 目标 ${limit}`;
   return cardShell(title, subtitle, title, [
