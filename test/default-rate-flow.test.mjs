@@ -307,3 +307,24 @@ test("typing default electricity price opens the same settings entry", async () 
     context: { messageId: "message", chatId: "chat" }
   }]);
 });
+
+test("typing 设置默认电价 opens the same settings entry", async () => {
+  const actions = [];
+  await handleMessageEvent({
+    sender_type: "user",
+    chat_type: "p2p",
+    message_type: "text",
+    chat_id: "chat",
+    message_id: "message",
+    content: "设置默认电价"
+  }, {
+    registerChat: async () => {},
+    replyText: async () => assert.fail("the visible menu label must also work as a text command"),
+    runAction: async (action, context) => actions.push({ action, context })
+  });
+
+  assert.deepEqual(actions, [{
+    action: "default_electricity_price",
+    context: { messageId: "message", chatId: "chat" }
+  }]);
+});

@@ -59,7 +59,8 @@ const textActions = new Map([
   ["本月", "monthly_report"], ["本月账单", "monthly_report"], ["本月小结", "monthly_report"], ["省了多少", "monthly_report"],
   ["上传充电账单", "upload_receipt_help"],
   ["车辆概览", "vehicle_overview"], ["概览", "vehicle_overview"],
-  ["默认电价", "default_electricity_price"]
+  ["默认电价", "default_electricity_price"],
+  ["设置默认电价", "default_electricity_price"]
 ]);
 
 function cliArgs() {

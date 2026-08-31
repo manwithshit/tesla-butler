@@ -47,6 +47,10 @@ function buttonRow(left, right) {
   };
 }
 
+function singleButtonRow(item) {
+  return buttonRow(item, { tag: "markdown", content: " " });
+}
+
 function menuButton() {
   return button("返回菜单", "menu", { primary: true });
 }
@@ -172,10 +176,7 @@ export function buildMenuCard(vehicle = null, options = {}) {
     },
     buttonRow(button("上次行程", "latest_trip", { primary: true }), button("车辆概览", "vehicle_overview")),
     buttonRow(button("本周账单", "weekly_report"), button("本月账单", "monthly_report")),
-    {
-      tag: "column_set", flex_mode: "none",
-      columns: [{ tag: "column", elements: [button("默认电价", "default_electricity_price")] }]
-    },
+    singleButtonRow(button("设置默认电价", "default_electricity_price")),
     { tag: "markdown", content: "<font color='grey'>充电完成后直接发账单图片，无需先点按钮。</font>", text_size: "notation" }
   ], { width: "default", tag: "本机运行" });
 }

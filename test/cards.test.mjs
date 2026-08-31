@@ -39,6 +39,25 @@ test("menu card passes Card 2.0 structural gates", () => {
   assert.match(JSON.stringify(card), /车辆离线.*更新于 09:15/);
 });
 
+test("menu renders 设置默认电价 in the same half-width grid as the main actions", () => {
+  const card = assertCard(buildMenuCard());
+  const row = card.body.elements.find((element) =>
+    element.tag === "column_set"
+    && JSON.stringify(element).includes('"action":"default_electricity_price"')
+  );
+  const settingsButton = row?.columns?.[0]?.elements?.find((element) => element.tag === "button");
+
+  assert.ok(row);
+  assert.equal(row.flex_mode, "bisect");
+  assert.equal(row.columns.length, 2);
+  assert.equal(settingsButton?.text?.content, "设置默认电价");
+  assert.equal(settingsButton?.width, "fill");
+  assert.equal(
+    row.columns[1].elements.some((element) => element.tag === "button"),
+    false
+  );
+});
+
 test("menu marks stale battery data as last recorded", () => {
   const card = buildMenuCard({
     battery_level: 70,
