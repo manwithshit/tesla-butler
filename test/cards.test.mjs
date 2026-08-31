@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   assertCard,
+  assertFormCard,
   buildChargingStatusCard,
+  buildDefaultElectricityPriceCard,
   buildLatestTripCard,
   buildMenuCard,
   buildPeriodReportCard,
@@ -24,10 +26,12 @@ test("menu card passes Card 2.0 structural gates", () => {
   assert.match(JSON.stringify(card), /weekly_report/);
   assert.match(JSON.stringify(card), /monthly_report/);
   assert.match(JSON.stringify(card), /vehicle_overview/);
+  assert.match(JSON.stringify(card), /default_electricity_price/);
   assert.match(JSON.stringify(card), /上次行程/);
   assert.doesNotMatch(JSON.stringify(card), /最近行程/);
   assert.match(JSON.stringify(card), /本周账单/);
   assert.match(JSON.stringify(card), /本月账单/);
+  assert.match(JSON.stringify(card), /默认电价/);
   assert.doesNotMatch(JSON.stringify(card), /本周小结|本月小结/);
   assert.doesNotMatch(JSON.stringify(card), /upload_receipt_help/);
   assert.doesNotMatch(JSON.stringify(card), /trip_statistics/);
@@ -42,6 +46,35 @@ test("menu marks stale battery data as last recorded", () => {
     updated_at: "2026-08-25T00:00:00.000"
   }, { now: new Date("2026-08-25T01:20:00.000Z") });
   assert.match(JSON.stringify(card), /最后记录.*08:00/);
+});
+
+test("default electricity price form card shows an explicit unset state and stable form fields", () => {
+  const card = assertFormCard(buildDefaultElectricityPriceCard({ currentRate: null }));
+  const form = card.elements.find((element) => element.tag === "form");
+  const input = form.elements.find((element) => element.tag === "input");
+  const submit = form.elements.find((element) => element.tag === "button");
+  const text = JSON.stringify(card);
+
+  assert.equal(card.schema, undefined);
+  assert.equal(form.name, "default_electricity_price_form");
+  assert.equal(input.name, "default_rate");
+  assert.equal(input.label.content, "默认电价（元/度）");
+  assert.equal(input.placeholder.content, "例如 0.60");
+  assert.equal(submit.name, "default_electricity_rate_submit");
+  assert.equal(submit.action_type, "form_submit");
+  assert.match(text, /默认电价设置/);
+  assert.match(text, /尚未设置/);
+  assert.match(text, /首次设置会补算既有未定价行程/);
+  assert.match(text, /后续修改只影响新行程/);
+  assert.throws(() => assertCard(card), /Card 2\.0 schema missing/);
+});
+
+test("default electricity price form card shows the configured rate without hiding meaningful decimals", () => {
+  const card = assertFormCard(buildDefaultElectricityPriceCard({ currentRate: 0.6188 }));
+  const text = JSON.stringify(card);
+
+  assert.match(text, /¥0\.6188\/度/);
+  assert.doesNotMatch(text, /尚未设置/);
 });
 
 test("all read-only result cards pass Card 2.0 structural gates", () => {
@@ -87,6 +120,71 @@ test("latest trip card names coarse start and end roads without exposing coordin
   assert.doesNotMatch(text, /耗电口径|WGS-84|GCJ-02|高德地图|地图底图/);
   assert.doesNotMatch(text, /返回菜单/);
   assert.doesNotMatch(text, /"(?:latitude|longitude|lat|lng)"\s*:/);
+});
+
+test("latest trip card explains the real pricing mix without exposing receipt details", () => {
+  const card = buildLatestTripCard({
+    distance_km: 12,
+    duration_min: 30,
+    estimated_kwh: 3,
+    estimated_cost_cny: 2.4,
+    start_at: "2026-08-31T00:00:00.000Z",
+    end_at: "2026-08-31T00:30:00.000Z",
+    segment_ids: [1],
+    pricing_summary: {
+      cost_cny: 2.4,
+      special_kwh: 2,
+      default_kwh: 1,
+      default_rates_cny_per_kwh: [0.6],
+      current_default_rate_cny_per_kwh: 0.6
+    }
+  });
+  const text = JSON.stringify(card);
+  assert.match(text, /计价依据/);
+  assert.match(text, /账单价 2 度 \+ 默认价 1 度/);
+  assert.doesNotMatch(text, /receipt|charging_process/);
+});
+
+test("latest trip card names the historical default rate actually used, not the current setting", () => {
+  const text = JSON.stringify(buildLatestTripCard({
+    distance_km: 10,
+    duration_min: 20,
+    estimated_kwh: 2,
+    estimated_cost_cny: 1.2,
+    start_at: "2026-08-01T00:00:00.000Z",
+    end_at: "2026-08-01T00:20:00.000Z",
+    pricing_summary: {
+      drive_count: 1,
+      cost_cny: 1.2,
+      special_kwh: 0,
+      default_kwh: 2,
+      default_rates_cny_per_kwh: [0.6],
+      current_default_rate_cny_per_kwh: 0.9
+    }
+  }));
+
+  assert.match(text, /当时默认电价 ¥0\.6\/度/);
+  assert.doesNotMatch(text, /¥0\.9\/度/);
+});
+
+test("latest trip card with only matched receipt energy does not mention a default rate", () => {
+  const text = JSON.stringify(buildLatestTripCard({
+    distance_km: 10,
+    duration_min: 20,
+    estimated_kwh: 2,
+    estimated_cost_cny: 3,
+    pricing_summary: {
+      drive_count: 1,
+      cost_cny: 3,
+      special_kwh: 2,
+      default_kwh: 0,
+      default_rates_cny_per_kwh: [],
+      current_default_rate_cny_per_kwh: 0.9
+    }
+  }));
+
+  assert.match(text, /已关联账单实际价/);
+  assert.doesNotMatch(text, /默认电价|默认价/);
 });
 
 test("latest trip card keeps both dates when a trip crosses midnight", () => {
@@ -380,6 +478,155 @@ test("period report highlights distance, energy and trip cost above an oil-cost 
   const note = card.body.elements.at(-1).content;
   assert.match(note, /^<font color='grey'>\*油价根据今日统一参考价预估；受地区、油站及优惠影响，结果可能存在偏差。\*<\/font>$/);
   assert.doesNotMatch(note, /日产轩逸|多花|2026-|演示油价/);
+});
+
+test("period report states how much energy used an associated receipt price", () => {
+  const trips = { trip_count: 2, distance_km: 20, duration_min: 45, estimated_kwh: 4 };
+  const card = buildPeriodReportCard({
+    period: "week",
+    trips,
+    tripElectricCost: 3,
+    receipts: {},
+    comparisons: calculateFuelComparisons(trips.distance_km, 3),
+    pricingSummary: {
+      cost_cny: 3,
+      special_kwh: 2.5,
+      default_kwh: 1.5,
+      default_rates_cny_per_kwh: [0.6],
+      current_default_rate_cny_per_kwh: 0.6
+    }
+  });
+  assert.match(JSON.stringify(card), /2\.5 度使用账单实际价/);
+});
+
+test("period report crossing a rate change describes per-trip historical rates", () => {
+  const trips = { trip_count: 2, distance_km: 20, duration_min: 45, estimated_kwh: 4 };
+  const text = JSON.stringify(buildPeriodReportCard({
+    period: "week",
+    trips,
+    tripElectricCost: 2.8,
+    receipts: {},
+    comparisons: calculateFuelComparisons(trips.distance_km, 2.8),
+    pricingSummary: {
+      drive_count: 2,
+      cost_cny: 2.8,
+      special_kwh: 0,
+      default_kwh: 4,
+      default_rates_cny_per_kwh: [0.6, 0.8],
+      current_default_rate_cny_per_kwh: 0.9
+    }
+  }));
+
+  assert.match(text, /每趟行程当时生效的默认电价/);
+  assert.doesNotMatch(text, /¥0\.9\/度/);
+});
+
+test("period report with pure matched receipt pricing does not claim a default-price component", () => {
+  const trips = { trip_count: 1, distance_km: 10, duration_min: 20, estimated_kwh: 2 };
+  const text = JSON.stringify(buildPeriodReportCard({
+    period: "week",
+    trips,
+    tripElectricCost: 3,
+    receipts: {},
+    comparisons: calculateFuelComparisons(trips.distance_km, 3),
+    pricingSummary: {
+      drive_count: 1,
+      cost_cny: 3,
+      special_kwh: 2,
+      default_kwh: 0,
+      default_rates_cny_per_kwh: [],
+      current_default_rate_cny_per_kwh: null
+    }
+  }));
+
+  assert.match(text, /全部按已关联账单实际价/);
+  assert.doesNotMatch(text, /默认电价|默认价/);
+});
+
+test("empty period with no configured rate never renders a null currency value", () => {
+  const trips = { trip_count: 0, distance_km: 0, duration_min: 0, estimated_kwh: 0 };
+  const text = JSON.stringify(buildPeriodReportCard({
+    period: "week",
+    trips,
+    tripElectricCost: 0,
+    receipts: {},
+    comparisons: calculateFuelComparisons(0, 0),
+    pricingSummary: {
+      drive_count: 0,
+      cost_cny: 0,
+      special_kwh: 0,
+      default_kwh: 0,
+      default_rates_cny_per_kwh: [],
+      current_default_rate_cny_per_kwh: null
+    }
+  }));
+
+  assert.match(text, /本周期暂无可计价行程/);
+  assert.doesNotMatch(text, /¥null/);
+});
+
+test("a missing requested drive is reported as incomplete instead of an empty period", () => {
+  const trips = { trip_count: 2, distance_km: 10, duration_min: 20, estimated_kwh: 2 };
+  const text = JSON.stringify(buildPeriodReportCard({
+    period: "week",
+    trips,
+    tripElectricCost: null,
+    receipts: {},
+    comparisons: calculateFuelComparisons(trips.distance_km, null),
+    pricingSummary: {
+      drive_count: 0,
+      requested_complete: false,
+      cost_cny: null,
+      special_kwh: null,
+      default_kwh: null,
+      unpriced_kwh: null,
+      default_rates_cny_per_kwh: [],
+      current_default_rate_cny_per_kwh: 0.6
+    }
+  }));
+
+  assert.match(text, /缺失的行程能耗或价格数据/);
+  assert.doesNotMatch(text, /本周期暂无可计价行程/);
+});
+
+test("a multi-car special-price allocation fails visibly instead of mixing vehicles", () => {
+  const trips = { trip_count: 2, distance_km: 10, duration_min: 20, estimated_kwh: 2 };
+  const text = JSON.stringify(buildPeriodReportCard({
+    period: "week",
+    trips,
+    tripElectricCost: null,
+    receipts: {},
+    comparisons: calculateFuelComparisons(trips.distance_km, null),
+    pricingSummary: {
+      drive_count: 2,
+      requested_complete: true,
+      cost_cny: null,
+      unsupported_multi_car: true,
+      current_default_rate_cny_per_kwh: 0.6
+    }
+  }));
+
+  assert.match(text, /暂不支持多辆车共用特殊价格批次/);
+});
+
+test("period report asks for a default rate instead of silently using a receipt average", () => {
+  const trips = { trip_count: 1, distance_km: 10, duration_min: 20, estimated_kwh: 2 };
+  const card = buildPeriodReportCard({
+    period: "week",
+    trips,
+    tripElectricCost: null,
+    receipts: { all_in_unit_price_cny_per_kwh: 9.99 },
+    comparisons: calculateFuelComparisons(trips.distance_km, null),
+    pricingSummary: {
+      cost_cny: null,
+      special_kwh: 0,
+      default_kwh: 0,
+      current_default_rate_cny_per_kwh: null
+    }
+  });
+  const text = JSON.stringify(card);
+  assert.match(text, /请先在菜单设置默认电价/);
+  assert.doesNotMatch(text, /9\.99/);
 });
 
 test("current month subtitle is explicit about month-to-date", () => {

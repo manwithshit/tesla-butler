@@ -16,10 +16,10 @@ export function calculateTripElectricCost(energyKwh, allInUnitPrice) {
   return Number((energy * unitPrice).toFixed(2));
 }
 
-export function calculateFuelComparisons(distanceKm, teslaCost = null) {
+export function calculateFuelComparisons(distanceKm, teslaCost = null, options = {}) {
   const distance = Math.max(0, Number(distanceKm) || 0);
   const actualTeslaCost = teslaCost === null ? null : Math.max(0, Number(teslaCost) || 0);
-  const reference = getReferenceFuelPrices();
+  const reference = options.reference || getReferenceFuelPrices();
   const prices = reference.prices;
   return {
     prices,

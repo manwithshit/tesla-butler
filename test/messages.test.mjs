@@ -1,6 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { handleImage, handleReceiptAction, handleReceiptMatchAction, isImageLikeMessage } from "../src/bot.mjs";
+import { handleImage, handleReceiptAction, handleReceiptMatchAction, isImageLikeMessage, runFeishuCli } from "../src/bot.mjs";
+
+test("Feishu CLI failures expose only a safe stage and never command payloads", async () => {
+  const privateMarker = "synthetic-private-recipient-and-form-value";
+  await assert.rejects(
+    () => runFeishuCli("send_form", ["--chat-id", privateMarker, "--content", privateMarker], {}, {
+      runFile: async (_file, args) => {
+        throw new Error(`Command failed with args: ${args.join(" ")}`);
+      }
+    }),
+    (error) => {
+      assert.equal(error.code, "FEISHU_CLI_FAILED");
+      assert.equal(error.stage, "send_form");
+      assert.match(error.message, /stage=send_form/);
+      assert.doesNotMatch(error.message, new RegExp(privateMarker));
+      return true;
+    }
+  );
+});
 
 test("direct image messages are recognized", () => {
   assert.equal(isImageLikeMessage({ message_type: "image", content: "{}" }), true);
@@ -135,4 +153,54 @@ test("receipt confirmation reports a ledger failure without claiming success", a
   assert.equal(result.status, "failed");
   assert.match(feedback[0], /记账失败/);
   assert.doesNotMatch(feedback[0], /已记账/);
+});
+
+test("a duplicate receipt for one charging session is rejected without double counting", async () => {
+  const feedback = [];
+  const error = new Error("duplicate");
+  error.code = "DUPLICATE_CHARGING_PROCESS_RECEIPT";
+  const result = await handleReceiptAction({
+    chat_id: "chat",
+    event_id: "event",
+    action: "confirm_receipt",
+    receipt_id: "receipt"
+  }, {
+    setReceiptStatus: async () => { throw error; },
+    sendText: async (_chatId, text) => feedback.push(text)
+  });
+
+  assert.equal(result.status, "duplicate");
+  assert.match(feedback[0], /未重复记账/);
+  assert.doesNotMatch(feedback[0], /已记账/);
+});
+
+test("receipt confirmation states whether it can join trip-cost allocation", async () => {
+  const feedback = [];
+  await handleReceiptAction({
+    chat_id: "chat",
+    event_id: "matched",
+    action: "confirm_receipt",
+    receipt_id: "matched"
+  }, {
+    setReceiptStatus: async () => ({
+      fields: { amount_cny: 10, energy_kwh: 8 },
+      charging_match: { status: "matched" }
+    }),
+    sendText: async (_chatId, text) => feedback.push(text)
+  });
+  await handleReceiptAction({
+    chat_id: "chat",
+    event_id: "unlinked",
+    action: "confirm_receipt",
+    receipt_id: "unlinked"
+  }, {
+    setReceiptStatus: async () => ({
+      fields: { amount_cny: 10, energy_kwh: 8 },
+      charging_match: { status: "unlinked" }
+    }),
+    sendText: async (_chatId, text) => feedback.push(text)
+  });
+
+  assert.match(feedback[0], /逐步分摊到后续行程/);
+  assert.match(feedback[1], /不会用于行程电费分摊/);
 });

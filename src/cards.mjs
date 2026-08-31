@@ -172,8 +172,112 @@ export function buildMenuCard(vehicle = null, options = {}) {
     },
     buttonRow(button("上次行程", "latest_trip", { primary: true }), button("车辆概览", "vehicle_overview")),
     buttonRow(button("本周账单", "weekly_report"), button("本月账单", "monthly_report")),
+    {
+      tag: "column_set", flex_mode: "none",
+      columns: [{ tag: "column", elements: [button("默认电价", "default_electricity_price")] }]
+    },
     { tag: "markdown", content: "<font color='grey'>充电完成后直接发账单图片，无需先点按钮。</font>", text_size: "notation" }
-  ], { width: "default", tag: "M5 本地运行" });
+  ], { width: "default", tag: "本机运行" });
+}
+
+export function buildDefaultElectricityPriceCard({ currentRate = null } = {}) {
+  const hasCurrentRate = currentRate !== null
+    && currentRate !== undefined
+    && Number.isFinite(Number(currentRate));
+  const formattedRate = hasCurrentRate
+    ? new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(currentRate))
+    : null;
+  const currentRateLabel = formattedRate ? `¥${formattedRate}/度` : "尚未设置";
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template: "blue",
+      title: { tag: "plain_text", content: "默认电价设置" }
+    },
+    elements: [
+      {
+        tag: "div",
+        text: { tag: "lark_md", content: `**当前默认电价**\n${currentRateLabel}` }
+      },
+      {
+        tag: "form",
+        name: "default_electricity_price_form",
+        elements: [
+          {
+            tag: "input",
+            name: "default_rate",
+            label: { tag: "plain_text", content: "默认电价（元/度）" },
+            label_position: "top",
+            placeholder: { tag: "plain_text", content: "例如 0.60" },
+            max_length: 8
+          },
+          {
+            tag: "button",
+            name: "default_electricity_rate_submit",
+            action_type: "form_submit",
+            text: { tag: "plain_text", content: "确认设置" },
+            type: "primary"
+          }
+        ]
+      },
+      {
+        tag: "note",
+        elements: [{
+          tag: "plain_text",
+          content: "首次设置会补算既有未定价行程；后续修改只影响新行程。"
+        }]
+      }
+    ]
+  };
+}
+
+function actualDefaultRates(pricing) {
+  const seen = new Set();
+  return (Array.isArray(pricing?.default_rates_cny_per_kwh)
+    ? pricing.default_rates_cny_per_kwh
+    : []).flatMap((value) => {
+      const rate = Number(value);
+      if (!Number.isFinite(rate) || rate < 0 || seen.has(rate)) return [];
+      seen.add(rate);
+      return [rate];
+    });
+}
+
+function formatElectricityRate(value) {
+  const rate = Number(value);
+  if (!Number.isFinite(rate) || rate < 0) return null;
+  return rate.toFixed(4).replace(/(?:\.0+|(\.\d*?[1-9])0+)$/, "$1");
+}
+
+function latestTripPricingBasis(pricing) {
+  if (!pricing) return "费用分摊估算";
+  if (pricing.unsupported_multi_car) return "多车辆费用分摊暂不支持";
+  if (pricing.cost_cny === null || pricing.cost_cny === undefined) {
+    const mayNeedDefaultRate = pricing.unpriced_kwh === undefined || Number(pricing.unpriced_kwh) > 0;
+    return pricing.current_default_rate_cny_per_kwh === null && mayNeedDefaultRate
+      ? "默认电价未设置"
+      : "能耗或价格数据不完整";
+  }
+
+  const specialKwh = Number(pricing.special_kwh) || 0;
+  const defaultKwh = Number(pricing.default_kwh) || 0;
+  const rates = actualDefaultRates(pricing);
+  const singleRate = rates.length === 1 ? formatElectricityRate(rates[0]) : null;
+  if (specialKwh > 0 && defaultKwh > 0) {
+    const defaultDetail = singleRate !== null
+      ? `当时 ¥${singleRate}/度`
+      : rates.length > 1
+        ? "按各段行程当时生效的电价"
+        : "按行程当时生效的电价";
+    return `账单价 ${specialKwh} 度 + 默认价 ${defaultKwh} 度（${defaultDetail}）`;
+  }
+  if (specialKwh > 0) return `已关联账单实际价 · ${specialKwh} 度`;
+  if (defaultKwh > 0) {
+    if (singleRate !== null) return `当时默认电价 ¥${singleRate}/度`;
+    if (rates.length > 1) return "按各段行程当时生效的默认电价";
+    return "按行程当时生效的默认电价";
+  }
+  return "暂无可计价电量";
 }
 
 export function buildLatestTripCard(trip, imageKey = null, hasRoute = false, mapMeta = {}) {
@@ -183,6 +287,9 @@ export function buildLatestTripCard(trip, imageKey = null, hasRoute = false, map
     ? "暂不可算"
     : `¥${Number(trip.estimated_cost_cny).toFixed(2)}`;
   const routeName = `${trip?.start_road || "起点未知"} → ${trip?.end_road || "终点未知"}`;
+  const pricing = trip?.pricing_summary;
+  const pricingBasis = !hasTrip ? "--"
+    : latestTripPricingBasis(pricing);
   const routeFailure = Boolean(hasTrip && mapMeta.failureStage);
   const advice = mapMeta.advice?.title && mapMeta.advice?.detail
     ? [{
@@ -212,7 +319,8 @@ export function buildLatestTripCard(trip, imageKey = null, hasRoute = false, map
     routeElement,
     { tag: "div", fields: [
       field("路线概览", hasTrip ? routeName : "--"),
-      field("行程时间", hasTrip ? formatTripTimeRange(trip.start_at, trip.end_at) : "--")
+      field("行程时间", hasTrip ? formatTripTimeRange(trip.start_at, trip.end_at) : "--"),
+      ...(pricing ? [field("计价依据", pricingBasis, false)] : [])
     ] },
     ...advice
   ]);
@@ -225,7 +333,7 @@ const periodTitles = {
   previous_month: ["上月小结", "上月完整周期"]
 };
 
-export function buildPeriodReportCard({ period, trips, receipts, comparisons, tripElectricCost = null, isSimulation = false, mainRoute = undefined }) {
+export function buildPeriodReportCard({ period, trips, receipts, comparisons, tripElectricCost = null, isSimulation = false, mainRoute = undefined, pricingSummary = null }) {
   const [title, subtitle] = periodTitles[period] || periodTitles.month;
   const costValue = tripElectricCost === null ? "暂不可算" : `¥${tripElectricCost.toFixed(2)}`;
   const chartValues = [
@@ -304,6 +412,35 @@ export function buildPeriodReportCard({ period, trips, receipts, comparisons, tr
   const note = comparisons.is_current_day === false
     ? "*油价根据最近一次统一参考价预估；受地区、油站及优惠影响，结果可能存在偏差。*"
     : "*油价根据今日统一参考价预估；受地区、油站及优惠影响，结果可能存在偏差。*";
+  const pricingRates = actualDefaultRates(pricingSummary);
+  const singlePricingRate = pricingRates.length === 1 ? formatElectricityRate(pricingRates[0]) : null;
+  const pricingNote = !pricingSummary ? null
+    : pricingSummary.unsupported_multi_car
+      ? "电费暂不可算：当前版本暂不支持多辆车共用特殊价格批次。"
+      : pricingSummary.requested_complete === false
+      ? "电费暂不可算：本周期存在缺失的行程能耗或价格数据。"
+      : pricingSummary.drive_count === 0
+      ? "本周期暂无可计价行程。"
+      : pricingSummary.cost_cny === null
+        ? pricingSummary.current_default_rate_cny_per_kwh === null
+          && (pricingSummary.unpriced_kwh === undefined || Number(pricingSummary.unpriced_kwh) > 0)
+          ? "电费暂不可算：请先在菜单设置默认电价；已可靠关联的账单电量仍会保留。"
+          : "电费暂不可算：本周期存在缺失的能耗或价格数据。"
+        : Number(pricingSummary.special_kwh) > 0 && Number(pricingSummary.default_kwh) > 0
+          ? singlePricingRate !== null
+            ? `电费按已关联账单实际价和行程当时的默认电价 ¥${singlePricingRate}/度分摊，其中 ${pricingSummary.special_kwh} 度使用账单实际价。`
+            : pricingRates.length > 1
+              ? `电费按已关联账单实际价和每趟行程当时生效的默认电价分摊，其中 ${pricingSummary.special_kwh} 度使用账单实际价。`
+              : `电费按已关联账单实际价和行程当时生效的默认电价分摊，其中 ${pricingSummary.special_kwh} 度使用账单实际价。`
+          : Number(pricingSummary.special_kwh) > 0
+            ? `电费全部按已关联账单实际价分摊，共 ${pricingSummary.special_kwh} 度。`
+            : Number(pricingSummary.default_kwh) > 0
+              ? singlePricingRate !== null
+                ? `电费按行程当时生效的默认电价 ¥${singlePricingRate}/度估算。`
+                : pricingRates.length > 1
+                  ? "电费按每趟行程当时生效的默认电价估算（本周期包含多档电价）。"
+                  : "电费按行程当时生效的默认电价估算。"
+              : "本周期暂无可计价电量。";
   return cardShell(title, subtitle, title, [
     metricRow([
       metricColumn("累计行程", `${trips.distance_km} km`, { compact: true }),
@@ -316,7 +453,7 @@ export function buildPeriodReportCard({ period, trips, receipts, comparisons, tr
     ] }] : []),
     ...(isMonthly ? routeElements : []),
     chartElement,
-    { tag: "markdown", content: `<font color='grey'>${note}</font>`, text_size: "notation" }
+    { tag: "markdown", content: `<font color='grey'>${pricingNote ? `${pricingNote}\n` : ""}${note}</font>`, text_size: "notation" }
   ], { tag: isSimulation ? "模拟数据" : null });
 }
 
@@ -541,5 +678,18 @@ export function assertCard(card) {
   if (!Array.isArray(elements) || elements.length < 2 || elements.length > 5) throw new Error("card visual block count out of range");
   const primaryButtons = JSON.stringify(card).match(/"primary_filled"/g)?.length || 0;
   if (primaryButtons > 1) throw new Error("card must have at most one primary action");
+  return card;
+}
+
+export function assertFormCard(card) {
+  if (card?.schema !== undefined) throw new Error("legacy form card must not declare a schema");
+  if (!card?.header?.title?.content) throw new Error("form card title missing");
+  if (!Array.isArray(card?.elements) || card.elements.length < 2) throw new Error("form card root elements missing");
+  const form = card.elements.find((element) => element?.tag === "form");
+  if (!form?.name || !Array.isArray(form.elements)) throw new Error("form card form missing");
+  const input = form.elements.find((element) => element?.tag === "input");
+  if (!input?.name || !input?.label?.content || !input?.placeholder?.content) throw new Error("form card input missing");
+  const submit = form.elements.find((element) => element?.tag === "button" && element?.action_type === "form_submit");
+  if (!submit?.name || !submit?.text?.content) throw new Error("form card submit button missing");
   return card;
 }

@@ -58,6 +58,7 @@ export async function getRecentChargingProcesses({ before = new Date(), days = 7
   const safeDays = Math.max(1, Math.min(31, Math.trunc(Number(days) || 7)));
   const safeLimit = Math.max(1, Math.min(50, Math.trunc(Number(limit) || 20)));
   const beforeIso = safeBefore.toISOString();
+  const beforeUtc = teslaMateUtcNaiveSqlExpression(beforeIso, "invalid charging lookup time");
   return sqlJson(`
     SELECT COALESCE(json_agg(row_to_json(recent) ORDER BY recent.end_at DESC), '[]'::json)
     FROM (
@@ -77,8 +78,8 @@ export async function getRecentChargingProcesses({ before = new Date(), days = 7
         LIMIT 1
       ) latest ON true
       WHERE cp.end_date IS NOT NULL
-        AND cp.end_date <= '${beforeIso}'::timestamptz + interval '10 minutes'
-        AND cp.end_date >= '${beforeIso}'::timestamptz - interval '${safeDays} days'
+        AND cp.end_date <= ${beforeUtc} + interval '10 minutes'
+        AND cp.end_date >= ${beforeUtc} - interval '${safeDays} days'
       ORDER BY cp.end_date DESC
       LIMIT ${safeLimit}
     ) recent;
@@ -161,6 +162,91 @@ export async function getLatestTrip() {
       LIMIT 1
     ), 'null'::json);
   `);
+}
+
+function teslaMateUtcNaiveSqlExpression(value, errorMessage) {
+  const raw = String(value ?? "").trim();
+  const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw) ? raw : `${raw}Z`;
+  const timestamp = new Date(normalized);
+  if (!raw || !Number.isFinite(timestamp.getTime())) {
+    throw new Error(errorMessage);
+  }
+  return `('${timestamp.toISOString()}'::timestamptz AT TIME ZONE 'UTC')`;
+}
+
+export function driveEnergyTimelineSincePredicate(value) {
+  return `d.start_date >= ${teslaMateUtcNaiveSqlExpression(value, "invalid drive energy timeline start")}`;
+}
+
+export async function getDriveEnergyTimeline({ since = null, driveIds = null } = {}) {
+  const selection = [];
+  if (since !== null && since !== undefined) {
+    selection.push(driveEnergyTimelineSincePredicate(since));
+  }
+  if (driveIds !== null && driveIds !== undefined) {
+    const values = Array.isArray(driveIds) ? driveIds : [driveIds];
+    selection.push(values.length > 0 ? `d.id IN (${driveIdsSql(values)})` : "false");
+  }
+  const selectionClause = selection.length > 0 ? `AND (${selection.join(" OR ")})` : "";
+  return sqlJson(`
+    WITH selected_drives AS (
+      SELECT d.*, c.efficiency
+      FROM drives d
+      JOIN cars c ON c.id = d.car_id
+      WHERE d.end_date IS NOT NULL ${selectionClause}
+    ), ordered_power AS (
+      SELECT
+        p.drive_id,
+        EXTRACT(EPOCH FROM (
+          lead(p.date) OVER (PARTITION BY p.drive_id ORDER BY p.date, p.id) - p.date
+        )) AS seconds,
+        (p.power::float8 + lead(p.power::float8) OVER (
+          PARTITION BY p.drive_id ORDER BY p.date, p.id
+        )) / 2 AS average_power
+      FROM positions p
+      JOIN selected_drives d ON d.id = p.drive_id
+      WHERE p.power IS NOT NULL
+    ), drive_power AS (
+      SELECT
+        drive_id,
+        count(*) FILTER (WHERE seconds > 0 AND seconds <= 10 AND average_power IS NOT NULL) AS valid_segments,
+        sum(average_power * seconds / 3600) FILTER (
+          WHERE seconds > 0 AND seconds <= 10 AND average_power IS NOT NULL
+        ) AS net_kwh
+      FROM ordered_power
+      GROUP BY drive_id
+    ), timeline AS (
+      SELECT
+        d.id AS drive_id,
+        d.car_id,
+        d.start_date AS start_at,
+        d.end_date AS end_at,
+        CASE
+          WHEN p.valid_segments > 0 THEN round(greatest(p.net_kwh, 0)::numeric, 3)
+          WHEN d.efficiency IS NOT NULL
+            AND d.start_ideal_range_km IS NOT NULL
+            AND d.end_ideal_range_km IS NOT NULL
+          THEN round((greatest(d.start_ideal_range_km - d.end_ideal_range_km, 0) * d.efficiency / 1000)::numeric, 3)
+          ELSE NULL
+        END AS estimated_kwh,
+        CASE
+          WHEN p.valid_segments > 0 THEN 'power_integration'
+          WHEN d.efficiency IS NOT NULL
+            AND d.start_ideal_range_km IS NOT NULL
+            AND d.end_ideal_range_km IS NOT NULL
+          THEN 'range_efficiency'
+          ELSE 'unavailable'
+        END AS energy_source
+      FROM selected_drives d
+      LEFT JOIN drive_power p ON p.drive_id = d.id
+    )
+    SELECT COALESCE(json_agg(row_to_json(timeline) ORDER BY start_at, drive_id), '[]'::json)
+    FROM timeline;
+  `, 30_000);
+}
+
+export async function getTeslaMateCarCount() {
+  return Number(await sqlJson("SELECT count(*) FROM cars;", 3_000));
 }
 
 function driveIdsSql(driveIds) {
@@ -533,6 +619,10 @@ export async function getPeriodTrips(period) {
     )
     SELECT json_build_object(
       'trip_count', count(d.id),
+      'drive_ids', COALESCE(
+        json_agg(d.id ORDER BY d.start_date) FILTER (WHERE d.id IS NOT NULL),
+        '[]'::json
+      ),
       'distance_km', round(COALESCE(sum(d.distance), 0)::numeric, 1),
       'duration_min', COALESCE(sum(d.duration_min), 0),
       'average_distance_km', round(COALESCE(avg(d.distance), 0)::numeric, 1),

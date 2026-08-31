@@ -6,7 +6,9 @@ import { analyzeChargingReceipt, validateReceipt } from "./receipt-recognizer.mj
 import { matchReceiptToChargingProcesses } from "./receipt-charging-match.mjs";
 import {
   assertCard,
+  assertFormCard,
   buildChargingStatusCard,
+  buildDefaultElectricityPriceCard,
   buildLatestTripCard,
   buildMenuCard,
   buildPeriodReportCard,
@@ -15,6 +17,8 @@ import {
   buildVehicleOverviewCard
 } from "./cards.mjs";
 import { calculateFuelComparisons, calculateTripElectricCost } from "./comparisons.mjs";
+import { formatDefaultElectricityRate, parseDefaultRateFormValue, parseDefaultRateTextCommand } from "./default-rate.mjs";
+import { getElectricityCostSummary } from "./electricity-cost-service.mjs";
 import { refreshReferenceFuelPrices } from "./fuel-prices.mjs";
 import { renderRoutePreview } from "./map.mjs";
 import { resolveRouteImage } from "./route-image.mjs";
@@ -33,12 +37,16 @@ import {
 } from "./teslamate.mjs";
 import {
   getReceiptTotals,
+  getDefaultRatePromptedAt,
+  getPricingSettings,
   getRouteImageCache,
+  markDefaultRatePrompted,
   opaqueId,
   registerChat,
   savePendingReceipt,
   selectReceiptChargingMatch,
   setReceiptStatus,
+  setDefaultElectricityRate,
   setRouteImageCacheEntry
 } from "./store.mjs";
 import { selectMainRoute } from "./routes.mjs";
@@ -50,7 +58,8 @@ const textActions = new Map([
   ["本周", "weekly_report"], ["本周账单", "weekly_report"], ["本周小结", "weekly_report"],
   ["本月", "monthly_report"], ["本月账单", "monthly_report"], ["本月小结", "monthly_report"], ["省了多少", "monthly_report"],
   ["上传充电账单", "upload_receipt_help"],
-  ["车辆概览", "vehicle_overview"], ["概览", "vehicle_overview"]
+  ["车辆概览", "vehicle_overview"], ["概览", "vehicle_overview"],
+  ["默认电价", "default_electricity_price"]
 ]);
 
 function cliArgs() {
@@ -61,58 +70,94 @@ function idempotency(prefix, value) {
   return `${prefix}-${opaqueId(value)}`.slice(0, 50);
 }
 
+export async function runFeishuCli(stage, args, options = {}, dependencies = {}) {
+  const execute = dependencies.runFile || runFile;
+  try {
+    return await execute(config.larkCli, args, { cwd: config.root, ...options });
+  } catch {
+    const error = new Error(`Feishu CLI operation failed stage=${stage}`);
+    error.code = "FEISHU_CLI_FAILED";
+    error.stage = stage;
+    throw error;
+  }
+}
+
 async function replyText(messageId, text, key = messageId) {
-  await runFile(config.larkCli, [
+  await runFeishuCli("reply_text", [
     ...cliArgs(), "im", "+messages-reply",
     "--message-id", messageId,
     "--text", text,
     "--as", "bot",
     "--idempotency-key", idempotency("reply", key)
-  ], { cwd: config.root });
+  ]);
 }
 
 async function replyCard(messageId, card, key = messageId) {
   assertCard(card);
-  await runFile(config.larkCli, [
+  await runFeishuCli("reply_card", [
     ...cliArgs(), "im", "+messages-reply",
     "--message-id", messageId,
     "--msg-type", "interactive",
     "--content", JSON.stringify(card),
     "--as", "bot",
     "--idempotency-key", idempotency("card", key)
-  ], { cwd: config.root });
+  ]);
+}
+
+async function replyFormCard(messageId, card, key = messageId) {
+  assertFormCard(card);
+  await runFeishuCli("reply_form", [
+    ...cliArgs(), "im", "+messages-reply",
+    "--message-id", messageId,
+    "--msg-type", "interactive",
+    "--content", JSON.stringify(card),
+    "--as", "bot",
+    "--idempotency-key", idempotency("form", key)
+  ]);
 }
 
 async function sendCard(chatId, card, key) {
   assertCard(card);
-  await runFile(config.larkCli, [
+  await runFeishuCli("send_card", [
     ...cliArgs(), "im", "+messages-send",
     "--chat-id", chatId,
     "--msg-type", "interactive",
     "--content", JSON.stringify(card),
     "--as", "bot",
     "--idempotency-key", idempotency("card", key)
-  ], { cwd: config.root });
+  ]);
+}
+
+async function sendFormCard(chatId, card, key) {
+  assertFormCard(card);
+  await runFeishuCli("send_form", [
+    ...cliArgs(), "im", "+messages-send",
+    "--chat-id", chatId,
+    "--msg-type", "interactive",
+    "--content", JSON.stringify(card),
+    "--as", "bot",
+    "--idempotency-key", idempotency("form", key)
+  ]);
 }
 
 async function sendText(chatId, text, key) {
-  await runFile(config.larkCli, [
+  await runFeishuCli("send_text", [
     ...cliArgs(), "im", "+messages-send",
     "--chat-id", chatId,
     "--text", text,
     "--as", "bot",
     "--idempotency-key", idempotency("send", key)
-  ], { cwd: config.root });
+  ]);
 }
 
 async function uploadCardImage(imagePath) {
   const relativeImagePath = path.relative(config.root, imagePath);
-  const { stdout } = await runFile(config.larkCli, [
+  const { stdout } = await runFeishuCli("upload_image", [
     ...cliArgs(), "im", "images", "create",
     "--data", JSON.stringify({ image_type: "message" }),
     "--file", `image=${relativeImagePath}`,
     "--as", "bot"
-  ], { cwd: config.root, timeout: 60_000 });
+  ], { timeout: 60_000 });
   const parsed = JSON.parse(stdout);
   const imageKey = parsed.image_key || parsed.data?.image_key || parsed.result?.image_key;
   if (!imageKey) throw new Error("Feishu image upload returned no image_key");
@@ -127,7 +172,8 @@ async function makePeriodCard(period) {
     getReceiptTotals(period),
     isMonthly ? getPeriodRouteCandidates(period) : Promise.resolve(null)
   ]);
-  const tripElectricCost = calculateTripElectricCost(trips.estimated_kwh, receipts.all_in_unit_price_cny_per_kwh);
+  const pricingSummary = await getElectricityCostSummary(trips.drive_ids || []);
+  const tripElectricCost = pricingSummary.cost_cny;
   const comparisons = calculateFuelComparisons(trips.distance_km, tripElectricCost);
   let mainRoute;
   if (isMonthly) {
@@ -162,11 +208,18 @@ async function makePeriodCard(period) {
       }
     }
   }
-  return buildPeriodReportCard({ period, trips, receipts, comparisons, tripElectricCost, mainRoute });
+  return buildPeriodReportCard({ period, trips, receipts, comparisons, tripElectricCost, mainRoute, pricingSummary });
 }
 
 async function makeMenuCard() {
   return buildMenuCard(await getVehicleOverview());
+}
+
+async function makeDefaultElectricityPriceCard() {
+  const pricing = await getPricingSettings();
+  return buildDefaultElectricityPriceCard({
+    currentRate: pricing.default_rate_history.at(-1)?.price_cny_per_kwh ?? null
+  });
 }
 
 async function makeLatestTripCard() {
@@ -198,16 +251,14 @@ async function getTripAdvice(trip) {
 }
 
 async function makeTripGroupCard(trip) {
-  const [route, receipts, advice] = await Promise.all([
+  const [route, pricingSummary, advice] = await Promise.all([
     trip?.segment_ids?.length ? getDriveGroupRoute(trip.segment_ids) : Promise.resolve([]),
-    getReceiptTotals("month"),
+    trip?.segment_ids?.length ? getElectricityCostSummary(trip.segment_ids) : Promise.resolve(null),
     getTripAdvice(trip)
   ]);
   if (trip) {
-    trip.estimated_cost_cny = calculateTripElectricCost(
-      trip.estimated_kwh,
-      receipts.all_in_unit_price_cny_per_kwh
-    );
+    trip.estimated_cost_cny = pricingSummary?.cost_cny ?? null;
+    trip.pricing_summary = pricingSummary;
   }
   if (!trip) return buildLatestTripCard(null);
   const cacheKey = `trip-v2-${opaqueId(JSON.stringify({
@@ -302,12 +353,56 @@ async function deliverCard(context, card, suffix) {
   else await sendCard(context.chatId, card, `${context.eventId}:${suffix}`);
 }
 
+async function deliverFormCard(context, card, suffix) {
+  if (context.messageId) await replyFormCard(context.messageId, card, `${context.messageId}:${suffix}`);
+  else await sendFormCard(context.chatId, card, `${context.eventId}:${suffix}`);
+}
+
+export async function maybeShowDefaultRateOnboarding(context, dependencies = {}) {
+  const pending = defaultRateOnboardingQueue.then(() => showDefaultRateOnboarding(context, dependencies));
+  defaultRateOnboardingQueue = pending.then(
+    () => undefined,
+    () => undefined
+  );
+  return pending;
+}
+
+let defaultRateOnboardingQueue = Promise.resolve();
+
+async function showDefaultRateOnboarding(context, dependencies = {}) {
+  const ops = {
+    getPricingSettings,
+    getDefaultRatePromptedAt,
+    buildDefaultElectricityPriceCard,
+    sendFormCard,
+    markDefaultRatePrompted,
+    ...dependencies
+  };
+  if (!context?.chatId) return { status: "no_chat" };
+  const [pricing, promptedAt] = await Promise.all([
+    ops.getPricingSettings(),
+    ops.getDefaultRatePromptedAt()
+  ]);
+  const currentRate = pricing.default_rate_history.at(-1)?.price_cny_per_kwh ?? null;
+  if (currentRate !== null) return { status: "already_set" };
+  if (promptedAt) return { status: "already_prompted" };
+  const card = ops.buildDefaultElectricityPriceCard({ currentRate: null });
+  await ops.sendFormCard(context.chatId, card, "default-rate-onboarding-v1");
+  await ops.markDefaultRatePrompted();
+  return { status: "prompted" };
+}
+
 async function runAction(action, context) {
   const started = Date.now();
   let status = "success";
   try {
     if (action === "menu") {
       await deliverCard(context, await makeMenuCard(), "menu");
+      await maybeShowDefaultRateOnboarding(context);
+      return;
+    }
+    if (action === "default_electricity_price") {
+      await deliverFormCard(context, await makeDefaultElectricityPriceCard(), "default-rate");
       return;
     }
     if (action === "latest_trip") {
@@ -344,14 +439,14 @@ async function downloadMessageImage(messageId, content) {
   for (const file of await fs.readdir(dir)) {
     if (file.startsWith(stem)) return path.join(dir, file);
   }
-  await runFile(config.larkCli, [
+  await runFeishuCli("download_image", [
     ...cliArgs(), "im", "+messages-resources-download",
     "--message-id", messageId,
     "--file-key", imageKey,
     "--type", "image",
     "--output", `data/raw/feishu/${stem}`,
     "--as", "bot"
-  ], { cwd: config.root, timeout: 120_000 });
+  ], { timeout: 120_000 });
   const downloaded = (await fs.readdir(dir)).find((file) => file.startsWith(stem));
   if (!downloaded) throw new Error("image download completed without output file");
   return path.join(dir, downloaded);
@@ -492,24 +587,89 @@ export async function handleReceiptMatchAction(event, dependencies = {}) {
   return { status: "matched" };
 }
 
-export async function handleMessageEvent(event) {
+function savedDefaultRateText(rate, changed, firstSetting) {
+  const formatted = formatDefaultElectricityRate(rate);
+  if (!changed) return `默认电价仍为 ¥${formatted}/度，没有重复新增记录。`;
+  return firstSetting
+    ? `默认电价已保存为 ¥${formatted}/度。首次设置会补算既有未定价行程；以后可从菜单随时修改。`
+    : `默认电价已更新为 ¥${formatted}/度。本次修改只影响之后开始的新行程，过去行程仍按当时电价。`;
+}
+
+const invalidDefaultRateText = "未保存：请输入 0 到 10 之间的数字，最多保留 4 位小数，例如 0.60。";
+
+export async function handleDefaultRateSubmission(event, dependencies = {}) {
+  const ops = { setDefaultElectricityRate, sendText, ...dependencies };
+  const rate = event.rate ?? parseDefaultRateFormValue(event.form_value);
+  if (rate === null || rate === undefined) {
+    await retryFeedback(
+      () => ops.sendText(event.chat_id, invalidDefaultRateText, `${event.event_id}:default-rate-invalid`),
+      2
+    );
+    return { status: "invalid" };
+  }
+  let current;
+  let changed;
+  let firstSetting;
+  try {
+    const before = await (dependencies.getPricingSettings || getPricingSettings)();
+    const previous = before.default_rate_history.at(-1)?.price_cny_per_kwh ?? null;
+    firstSetting = previous === null;
+    const settings = await ops.setDefaultElectricityRate(rate, {
+      source: event.source || "user_feishu_form"
+    });
+    current = settings.default_rate_history.at(-1)?.price_cny_per_kwh ?? rate;
+    changed = previous === null || Number(previous) !== Number(current);
+  } catch {
+    await retryFeedback(
+      () => ops.sendText(event.chat_id, "保存失败：默认电价没有更新，请稍后重新提交。", `${event.event_id}:default-rate-failed`),
+      2
+    );
+    return { status: "failed" };
+  }
+  await retryFeedback(
+    () => ops.sendText(event.chat_id, savedDefaultRateText(current, changed, firstSetting), `${event.event_id}:default-rate-saved`),
+    2
+  );
+  return { status: changed ? "saved" : "unchanged", rate: current };
+}
+
+export async function handleMessageEvent(event, dependencies = {}) {
+  const ops = {
+    registerChat,
+    handleImage,
+    replyText,
+    handleDefaultRateSubmission,
+    runAction,
+    ...dependencies
+  };
   if (event.sender_type === "bot" || event.chat_type !== "p2p") return;
-  await registerChat(event.chat_id);
+  await ops.registerChat(event.chat_id);
   if (isImageLikeMessage(event)) {
-    await handleImage(event);
+    await ops.handleImage(event);
     return;
   }
   if (event.message_type !== "text") {
-    await replyText(event.message_id, "目前只接收文字指令和充电账单图片。发送“菜单”查看入口。", `${event.message_id}:unsupported`);
+    await ops.replyText(event.message_id, "目前只接收文字指令和充电账单图片。发送“菜单”查看入口。", `${event.message_id}:unsupported`);
     return;
   }
-  const normalized = String(event.content || "").trim().replace(/[？?。！!]/g, "");
+  const rawText = String(event.content || "").trim();
+  const normalized = rawText.replace(/[？?。！!]/g, "");
+  const defaultRate = /[？?]/.test(rawText) ? null : parseDefaultRateTextCommand(normalized);
+  if (defaultRate !== null) {
+    await ops.handleDefaultRateSubmission({
+      chat_id: event.chat_id,
+      event_id: event.message_id,
+      rate: defaultRate,
+      source: "user_feishu_text"
+    });
+    return;
+  }
   const action = textActions.get(normalized);
   if (!action) {
-    await replyText(event.message_id, "可用指令：菜单、行程小结、本周小结、本月小结、车辆概览。也可以直接发送充电账单图片。", `${event.message_id}:unknown`);
+    await ops.replyText(event.message_id, "可用指令：菜单、行程小结、本周小结、本月小结、车辆概览、默认电价。也可以直接发送充电账单图片。", `${event.message_id}:unknown`);
     return;
   }
-  await runAction(action, { messageId: event.message_id });
+  await ops.runAction(action, { messageId: event.message_id, chatId: event.chat_id });
 }
 
 export async function handleReceiptAction(event, dependencies = {}) {
@@ -519,16 +679,21 @@ export async function handleReceiptAction(event, dependencies = {}) {
   try {
     receipt = await ops.setReceiptStatus(event.receipt_id, status);
   } catch (error) {
+    const failureText = error?.code === "DUPLICATE_CHARGING_PROCESS_RECEIPT"
+      ? "未重复记账：这次车辆充电已经关联过另一张账单。"
+      : "记账失败：账单没有写入本地账本，请稍后重新点击。";
     await retryFeedback(
-      () => ops.sendText(event.chat_id, "记账失败：账单没有写入本地账本，请稍后重新点击。", `${event.event_id}:ledger-failed`),
+      () => ops.sendText(event.chat_id, failureText, `${event.event_id}:ledger-failed`),
       2
     );
-    return { status: "failed" };
+    return { status: error?.code === "DUPLICATE_CHARGING_PROCESS_RECEIPT" ? "duplicate" : "failed" };
   }
   const text = !receipt
     ? "这条账单不存在或已被清理。"
     : status === "confirmed"
-      ? `已记账：¥${Number(receipt.fields.amount_cny).toFixed(2)}${receipt.fields.energy_kwh ? ` / ${receipt.fields.energy_kwh} kWh` : ""}。`
+      ? receipt.charging_match?.status === "matched"
+        ? `已记账：¥${Number(receipt.fields.amount_cny).toFixed(2)}${receipt.fields.energy_kwh ? ` / ${receipt.fields.energy_kwh} kWh` : ""}。这次充电会按实际价格逐步分摊到后续行程。`
+        : `已记账：¥${Number(receipt.fields.amount_cny).toFixed(2)}${receipt.fields.energy_kwh ? ` / ${receipt.fields.energy_kwh} kWh` : ""}。暂未可靠关联车辆充电，因此不会用于行程电费分摊。`
       : "已忽略这张充电账单。";
   await retryFeedback(
     () => ops.sendText(event.chat_id, text, `${event.event_id}:${status}`),
@@ -537,8 +702,25 @@ export async function handleReceiptAction(event, dependencies = {}) {
   return { status: receipt ? status : "missing" };
 }
 
-export async function handleCardEvent(event) {
-  await registerChat(event.chat_id);
+export async function handleCardEvent(event, dependencies = {}) {
+  const ops = {
+    registerChat,
+    handleDefaultRateSubmission,
+    runAction,
+    handleReceiptAction,
+    handleReceiptMatchAction,
+    ...dependencies
+  };
+  await ops.registerChat(event.chat_id);
+  if (event.action_name === "default_electricity_rate_submit") {
+    await ops.handleDefaultRateSubmission({
+      chat_id: event.chat_id,
+      event_id: event.event_id,
+      form_value: event.form_value,
+      source: "user_feishu_form"
+    });
+    return;
+  }
   let value = {};
   try {
     value = typeof event.action_value === "string" ? JSON.parse(event.action_value) : (event.action_value || {});
@@ -546,12 +728,12 @@ export async function handleCardEvent(event) {
     return;
   }
   const action = value.action;
-  if (["menu", "latest_trip", "weekly_report", "monthly_report", "upload_receipt_help", "vehicle_overview"].includes(action)) {
-    await runAction(action, { chatId: event.chat_id, eventId: event.event_id });
+  if (["menu", "latest_trip", "weekly_report", "monthly_report", "upload_receipt_help", "vehicle_overview", "default_electricity_price"].includes(action)) {
+    await ops.runAction(action, { chatId: event.chat_id, eventId: event.event_id });
     return;
   }
   if (action === "confirm_receipt" || action === "ignore_receipt") {
-    await handleReceiptAction({
+    await ops.handleReceiptAction({
       chat_id: event.chat_id,
       event_id: event.event_id,
       action,
@@ -560,7 +742,7 @@ export async function handleCardEvent(event) {
     return;
   }
   if (action === "select_receipt_match") {
-    await handleReceiptMatchAction({
+    await ops.handleReceiptMatchAction({
       chat_id: event.chat_id,
       event_id: event.event_id,
       receipt_id: value.receipt_id,
