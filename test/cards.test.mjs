@@ -493,7 +493,9 @@ test("period report highlights distance, energy and trip cost above an oil-cost 
   const chart = card.body.elements.find((element) => element.tag === "chart");
   const maximumCost = Math.max(...chart.chart_spec.data.values.map((item) => item.cost));
   const valueAxis = chart.chart_spec.axes.find((axis) => axis.orient === "bottom");
-  assert.ok(valueAxis.max >= maximumCost * 1.12);
+  assert.ok(valueAxis.max >= maximumCost * 1.3);
+  assert.equal(chart.chart_spec.label.overlap, false);
+  assert.ok(Number(chart.chart_spec.padding?.right) >= 24);
   const note = card.body.elements.at(-1).content;
   assert.match(note, /^<font color='grey'>\*油价根据今日统一参考价预估；受地区、油站及优惠影响，结果可能存在偏差。\*<\/font>$/);
   assert.doesNotMatch(note, /日产轩逸|多花|2026-|演示油价/);
@@ -516,6 +518,37 @@ test("period report states how much energy used an associated receipt price", ()
     }
   });
   assert.match(JSON.stringify(card), /2\.5 度使用账单实际价/);
+});
+
+test("previous-month report states its exact period, raw drive count and default-price basis", () => {
+  const trips = {
+    trip_count: 43,
+    distance_km: 600.1,
+    duration_min: 844,
+    estimated_kwh: 85.48,
+    period_start_at: "2026-07-31T16:00:00.000Z",
+    period_end_at: "2026-08-31T16:00:00.000Z"
+  };
+  const text = JSON.stringify(buildPeriodReportCard({
+    period: "previous_month",
+    trips,
+    tripElectricCost: 85.47,
+    receipts: {},
+    comparisons: calculateFuelComparisons(trips.distance_km, 85.47),
+    mainRoute: null,
+    pricingSummary: {
+      drive_count: 43,
+      cost_cny: 85.47,
+      special_kwh: 0,
+      default_kwh: 85.472,
+      unpriced_kwh: 0,
+      default_rates_cny_per_kwh: [1],
+      current_default_rate_cny_per_kwh: 1
+    }
+  }));
+
+  assert.match(text, /统计周期：8月1日—8月31日 · 43 段 TeslaMate 驾驶记录/);
+  assert.match(text, /85\.472 度全部按行程当时生效的默认电价 ¥1\/度估算/);
 });
 
 test("period report crossing a rate change describes per-trip historical rates", () => {

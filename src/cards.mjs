@@ -150,7 +150,40 @@ function chartAxisMaximum(values) {
   if (maximum <= 0) return 1;
   const magnitude = 10 ** Math.floor(Math.log10(maximum));
   const step = magnitude / 10;
-  return Number((Math.ceil((maximum * 1.15) / step) * step).toPrecision(12));
+  return Number((Math.ceil((maximum * 1.35) / step) * step).toPrecision(12));
+}
+
+function periodDateParts(value) {
+  const date = value instanceof Date ? value : teslaMateDate(value);
+  if (!date) return null;
+  return Object.fromEntries(new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric"
+  }).formatToParts(date).map(({ type, value: part }) => [type, part]));
+}
+
+function formatPeriodRange(startValue, endValue) {
+  const startDate = teslaMateDate(startValue);
+  const endDate = teslaMateDate(endValue);
+  if (!startDate || !endDate || endDate <= startDate) return null;
+  const start = periodDateParts(startDate);
+  const end = periodDateParts(new Date(endDate.getTime() - 1));
+  if (!start || !end) return null;
+  const startLabel = start.year === end.year
+    ? `${start.month}月${start.day}日`
+    : `${start.year}年${start.month}月${start.day}日`;
+  const endLabel = start.year === end.year
+    ? `${end.month}月${end.day}日`
+    : `${end.year}年${end.month}月${end.day}日`;
+  return `${startLabel}—${endLabel}`;
+}
+
+function formatKwh(value) {
+  const energy = Number(value);
+  if (!Number.isFinite(energy) || energy < 0) return null;
+  return energy.toFixed(3).replace(/(?:\.0+|(\.\d*?[1-9])0+)$/, "$1");
 }
 
 export function buildMenuCard(vehicle = null, options = {}) {
@@ -393,9 +426,11 @@ export function buildPeriodReportCard({ period, trips, receipts, comparisons, tr
       color: ["#A8B1C4", "#3370FF"],
       title: { visible: true, text: `同样跑 ${trips.distance_km} km，各车型预计花费（元）` },
       legends: { visible: false },
+      padding: { top: 8, right: 32, bottom: 4, left: 4 },
       label: {
         visible: true,
         position: "outside",
+        overlap: false,
         style: {
           fontWeight: 500,
           stroke: "transparent",
@@ -415,6 +450,7 @@ export function buildPeriodReportCard({ period, trips, receipts, comparisons, tr
     : "*油价根据今日统一参考价预估；受地区、油站及优惠影响，结果可能存在偏差。*";
   const pricingRates = actualDefaultRates(pricingSummary);
   const singlePricingRate = pricingRates.length === 1 ? formatElectricityRate(pricingRates[0]) : null;
+  const defaultEnergy = formatKwh(pricingSummary?.default_kwh);
   const pricingNote = !pricingSummary ? null
     : pricingSummary.unsupported_multi_car
       ? "电费暂不可算：当前版本暂不支持多辆车共用特殊价格批次。"
@@ -435,13 +471,17 @@ export function buildPeriodReportCard({ period, trips, receipts, comparisons, tr
               : `电费按已关联账单实际价和行程当时生效的默认电价分摊，其中 ${pricingSummary.special_kwh} 度使用账单实际价。`
           : Number(pricingSummary.special_kwh) > 0
             ? `电费全部按已关联账单实际价分摊，共 ${pricingSummary.special_kwh} 度。`
-            : Number(pricingSummary.default_kwh) > 0
+          : Number(pricingSummary.default_kwh) > 0
               ? singlePricingRate !== null
-                ? `电费按行程当时生效的默认电价 ¥${singlePricingRate}/度估算。`
+                ? `${defaultEnergy} 度全部按行程当时生效的默认电价 ¥${singlePricingRate}/度估算。`
                 : pricingRates.length > 1
                   ? "电费按每趟行程当时生效的默认电价估算（本周期包含多档电价）。"
                   : "电费按行程当时生效的默认电价估算。"
               : "本周期暂无可计价电量。";
+  const periodRange = isMonthly ? formatPeriodRange(trips.period_start_at, trips.period_end_at) : null;
+  const periodNote = periodRange
+    ? `统计周期：${periodRange} · ${Number(trips.trip_count) || 0} 段 TeslaMate 驾驶记录。`
+    : null;
   return cardShell(title, subtitle, title, [
     metricRow([
       metricColumn("累计行程", `${trips.distance_km} km`, { compact: true }),
@@ -454,7 +494,7 @@ export function buildPeriodReportCard({ period, trips, receipts, comparisons, tr
     ] }] : []),
     ...(isMonthly ? routeElements : []),
     chartElement,
-    { tag: "markdown", content: `<font color='grey'>${pricingNote ? `${pricingNote}\n` : ""}${note}</font>`, text_size: "notation" }
+    { tag: "markdown", content: `<font color='grey'>${periodNote ? `${periodNote}\n` : ""}${pricingNote ? `${pricingNote}\n` : ""}${note}</font>`, text_size: "notation" }
   ], { tag: isSimulation ? "模拟数据" : null });
 }
 

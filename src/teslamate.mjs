@@ -618,6 +618,10 @@ export async function getPeriodTrips(period) {
       LEFT JOIN drive_power p ON p.drive_id = d.id
     )
     SELECT json_build_object(
+      'period_start_at', (SELECT since_utc FROM bounds),
+      'period_end_at', ${period === "previous_month" || period === "previous_week"
+        ? "(SELECT until_utc FROM bounds)"
+        : "(now() AT TIME ZONE 'UTC')"},
       'trip_count', count(d.id),
       'drive_ids', COALESCE(
         json_agg(d.id ORDER BY d.start_date) FILTER (WHERE d.id IS NOT NULL),

@@ -36,16 +36,16 @@ test("main route requires at least three repeated trips", () => {
   assert.equal(selectMainRoute([drive(1, a, b), drive(2, b, a)]), null);
 });
 
-test("main route ranks by trip count then accumulated distance", () => {
+test("main route requires three repeats then ranks by accumulated distance", () => {
   const a = { lat: 30.2, lng: 120.2, road: "A路" };
   const b = { lat: 30.3, lng: 120.3, road: "B路" };
   const c = { lat: 31.2, lng: 121.2, road: "C路" };
   const d = { lat: 31.3, lng: 121.3, road: "D路" };
   const result = selectMainRoute([
-    drive(1, a, b, 5), drive(2, b, a, 5), drive(3, a, b, 5),
+    drive(1, a, b, 1), drive(2, b, a, 1), drive(3, a, b, 1), drive(7, b, a, 1),
     drive(4, c, d, 20), drive(5, d, c, 20), drive(6, c, d, 20)
   ]);
   assert.match(result.label, /C路.*D路|D路.*C路/);
   assert.equal(result.distance_km, 60);
+  assert.equal(result.trip_count, 3);
 });
-

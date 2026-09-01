@@ -90,7 +90,7 @@ export function selectMainRoute(drives, options = {}) {
 
   const winner = clusters
     .filter((cluster) => cluster.drives.length >= minimumTrips)
-    .sort((a, b) => b.drives.length - a.drives.length || b.distanceKm - a.distanceKm)[0];
+    .sort((a, b) => b.distanceKm - a.distanceKm || b.drives.length - a.drives.length)[0];
   if (!winner) return null;
   const representative = [...winner.drives].sort((a, b) => new Date(b.end_at || 0) - new Date(a.end_at || 0))[0];
   return {
@@ -102,4 +102,3 @@ export function selectMainRoute(drives, options = {}) {
     representative_end_road: representative.end_road || "终点未知"
   };
 }
-
