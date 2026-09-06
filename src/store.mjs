@@ -374,27 +374,34 @@ function receiptChargedAt(receipt) {
 export async function getReceiptTotals(period, options = {}) {
   const store = options.store || await readStore();
   const now = options.now || new Date();
-  const start = new Date(now);
+  // Shift to a Shanghai calendar, perform calendar arithmetic with UTC APIs,
+  // then convert the resulting midnight back to an absolute instant.
+  const offsetMs = 8 * 60 * 60 * 1_000;
+  const start = new Date(now.getTime() + offsetMs);
   let end = null;
   if (period === "week") {
-    const day = (now.getDay() + 6) % 7;
-    start.setDate(now.getDate() - day);
+    const day = (start.getUTCDay() + 6) % 7;
+    start.setUTCDate(start.getUTCDate() - day);
   } else if (period === "previous_week") {
-    const day = (now.getDay() + 6) % 7;
-    start.setDate(now.getDate() - day);
+    const day = (start.getUTCDay() + 6) % 7;
+    start.setUTCDate(start.getUTCDate() - day);
     end = new Date(start);
-    start.setDate(start.getDate() - 7);
+    start.setUTCDate(start.getUTCDate() - 7);
   } else if (period === "month") {
-    start.setDate(1);
+    start.setUTCDate(1);
   } else if (period === "previous_month") {
-    start.setDate(1);
+    start.setUTCDate(1);
     end = new Date(start);
-    start.setMonth(start.getMonth() - 1);
+    start.setUTCMonth(start.getUTCMonth() - 1);
   } else {
     throw new Error(`unsupported period: ${period}`);
   }
-  start.setHours(0, 0, 0, 0);
-  if (end) end.setHours(0, 0, 0, 0);
+  start.setUTCHours(0, 0, 0, 0);
+  start.setTime(start.getTime() - offsetMs);
+  if (end) {
+    end.setUTCHours(0, 0, 0, 0);
+    end.setTime(end.getTime() - offsetMs);
+  }
 
   const confirmed = Object.values(store.receipts).filter((receipt) => {
     if (receipt.status !== "confirmed") return false;
@@ -512,9 +519,26 @@ export async function saveChargingMonitorState(chargingMonitor) {
   });
 }
 
-export async function saveTripMonitorState(tripMonitor) {
+export async function appendTripSignal(signal) {
+  if (!signal?.id || !['locked', 'driver_front_door_open'].includes(signal.field)
+    || typeof signal.value !== 'boolean' || !Number.isFinite(Date.parse(signal.at))) {
+    throw new Error('invalid vehicle signal');
+  }
+  await updateRuntimeState((state) => {
+    state.trip_signal_inbox ||= [];
+    if (!state.trip_signal_inbox.some(item => item.id === signal.id)) {
+      state.trip_signal_inbox.push({ id: signal.id, field: signal.field, value: signal.value,
+        at: signal.at, retained: Boolean(signal.retained) });
+    }
+    return state;
+  });
+}
+
+export async function saveTripMonitorState(tripMonitor, { signalIds = [] } = {}) {
   await updateRuntimeState((state) => {
     state.trip_monitor = tripMonitor;
+    const consumed = new Set(signalIds);
+    state.trip_signal_inbox = (state.trip_signal_inbox || []).filter(item => !consumed.has(item.id));
     return state;
   });
 }

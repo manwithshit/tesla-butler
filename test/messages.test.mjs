@@ -1,6 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { handleImage, handleReceiptAction, handleReceiptMatchAction, isImageLikeMessage, runFeishuCli } from "../src/bot.mjs";
+import { handleImage, handleReceiptAction, handleReceiptMatchAction, handleMessageEvent, handleCardEvent, makeMenuCard, isImageLikeMessage, runFeishuCli } from "../src/bot.mjs";
+
+test('menu remains available when vehicle lookup hangs and cancels the lookup', async () => {
+  let aborted = false;
+  const card = await makeMenuCard({ timeoutMs: 5, getVehicle: ({ signal }) => new Promise((_, reject) => {
+    signal.addEventListener('abort', () => { aborted = true; reject(new Error('cancelled')); });
+  }) });
+  assert.equal(aborted, true);
+  assert.match(JSON.stringify(card), /设置默认电价/);
+  assert.match(JSON.stringify(card), /菜单功能仍可使用/);
+});
+
+test('real text and card entrypoints return safe feedback for exhausted query failures', async () => {
+  const notices = []; let queries = 0;
+  const dependencies = { registerChat: async () => {}, runAction: async () => { queries++; throw new Error('private details'); },
+    replyText: async (_id, text) => notices.push(text), sendText: async (_id, text) => notices.push(text) };
+  await handleMessageEvent({ message_id: 'fixture', chat_id: 'fixture', chat_type: 'p2p', message_type: 'text', content: '最近一程' }, dependencies);
+  await handleCardEvent({ event_id: 'fixture', chat_id: 'fixture', action_value: { action: 'vehicle_overview' } }, dependencies);
+  assert.equal(queries, 4); assert.equal(notices.length, 2);
+  assert.doesNotMatch(JSON.stringify(notices), /private/);
+});
 
 test("Feishu CLI failures expose only a safe stage and never command payloads", async () => {
   const privateMarker = "synthetic-private-recipient-and-form-value";

@@ -2,6 +2,25 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { resolveRouteImage } from "../src/route-image.mjs";
 
+test('a degraded cached map is reused briefly then upgraded, with concurrent requests sharing one render', async () => {
+  let clock = 0; let renders = 0; let reads = 0; let uploads = 0; let cache = {};
+  const dependencies = {
+    now: () => clock, readCache: async () => cache,
+    writeCache: async (key, entry) => { cache[key] = entry; },
+    render: async () => { renders++; return { path: 'fixture', hasRoute: true, hasBasemap: renders > 1 }; },
+    upload: async () => { uploads++; return 'fixture-image'; }
+  };
+  const request = { cacheKey: 'degraded-test', getRoute: async () => { reads++; return [{}, {}]; } };
+  const first = await resolveRouteImage(request, dependencies);
+  assert.equal(first.mapMeta.hasBasemap, false);
+  await resolveRouteImage(request, dependencies);
+  assert.equal(reads, 1);
+  clock = 5 * 60_000 + 1;
+  const recovered = await Promise.all(Array.from({length: 10}, () => resolveRouteImage(request, dependencies)));
+  assert.equal(renders, 2); assert.equal(uploads, 2); assert.equal(reads, 2);
+  assert.ok(recovered.every(result => result.mapMeta.hasBasemap));
+});
+
 test("a transient Feishu image upload is retried before showing a trip without a map", async () => {
   let uploads = 0;
   const result = await resolveRouteImage({

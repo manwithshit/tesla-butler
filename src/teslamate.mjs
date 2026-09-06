@@ -1,6 +1,11 @@
 import { config, projectPath } from "./config.mjs";
 import { runFile } from "./lib/process.mjs";
 import { groupDriveSegments } from "./trip-sessions.mjs";
+import { createQueryRunner } from './query-runtime.mjs';
+
+const queryRunner = createQueryRunner({ run: runFile,
+  log: event => process.stderr.write(`[${new Date().toISOString()}] db_query ${JSON.stringify(event)}\n`)
+});
 
 const composeArgs = [
   "compose",
@@ -8,20 +13,17 @@ const composeArgs = [
   "-f", projectPath("infra", "teslamate", "compose.yaml")
 ];
 
-async function sqlJson(sql, timeout = 30_000) {
-  const { stdout } = await runFile(config.dockerCli, [
+async function sqlJson(sql, timeout = 30_000, { signal, name = 'query' } = {}) {
+  return queryRunner(config.dockerCli, [
     ...composeArgs,
     "exec", "-T", "database",
     "psql", "-X", "-q", "-t", "-A",
     "-U", "teslamate", "-d", "teslamate",
-    "-c", sql
-  ], { cwd: config.root, timeout });
-
-  const value = stdout.trim();
-  return value ? JSON.parse(value) : null;
+    "-c", `BEGIN READ ONLY; SET LOCAL statement_timeout='${Math.max(1, timeout - 2_000)}ms'; ${sql} COMMIT;`
+  ], { cwd: config.root, timeout, signal }, name);
 }
 
-export async function getLatestChargingProcess() {
+export async function getLatestChargingProcess({ signal } = {}) {
   return sqlJson(`
     SELECT COALESCE((
       SELECT json_build_object(
@@ -49,7 +51,7 @@ export async function getLatestChargingProcess() {
       ORDER BY cp.id DESC
       LIMIT 1
     ), 'null'::json);
-  `, 3_000);
+  `, 8_000, { signal, name: 'charging_snapshot' });
 }
 
 export async function getRecentChargingProcesses({ before = new Date(), days = 7, limit = 20 } = {}) {
@@ -257,7 +259,7 @@ function driveIdsSql(driveIds) {
   return ids.join(",");
 }
 
-export async function getDriveMonitorSnapshot() {
+export async function getDriveMonitorSnapshot({ signal } = {}) {
   return sqlJson(`
     WITH recent AS (
       SELECT d.*
@@ -311,7 +313,7 @@ export async function getDriveMonitorSnapshot() {
       'completed', COALESCE((SELECT json_agg(row_to_json(c) ORDER BY c.start_at) FROM completed c), '[]'::json),
       'active', (SELECT row_to_json(a) FROM active a)
     );
-  `, 3_000);
+  `, 8_000, { signal, name: 'trip_snapshot' });
 }
 
 export async function getTripInsightHistory(limit = 50) {
@@ -521,7 +523,7 @@ export async function getDriveRoute(driveId) {
   `);
 }
 
-export async function getVehicleOverview() {
+export async function getVehicleOverview({ signal } = {}) {
   return sqlJson(`
     SELECT json_build_object(
       'model', COALESCE(NULLIF(c.marketing_name, ''), NULLIF(c.model, ''), '特斯拉'),
@@ -547,7 +549,7 @@ export async function getVehicleOverview() {
     ) p ON true
     ORDER BY c.display_priority, c.id
     LIMIT 1;
-  `);
+  `, 30_000, { signal, name: 'vehicle_overview' });
 }
 
 function periodBounds(period) {

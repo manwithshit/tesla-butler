@@ -1,4 +1,6 @@
 import { config } from "./config.mjs";
+import { randomUUID } from 'node:crypto';
+import { createEventProcessor, createSerialQueue, safeErrorCode } from './worker-runtime.mjs';
 import { connect } from "mqtt";
 import { handleCardEvent, handleMessageEvent, sendChargingEvent, sendCompletedTrip, sendScheduledReport } from "./bot.mjs";
 import { ChargingTracker, parseTeslaMateTopic } from "./charging.mjs";
@@ -6,7 +8,7 @@ import { createChargingDatabaseMonitor, deliverPendingChargingEvents } from "./c
 import { consumeLines } from "./lib/lines.mjs";
 import { spawnStreaming } from "./lib/process.mjs";
 import { ensureTeslaMate, getDriveGroup, getDriveMonitorSnapshot, getLatestChargingProcess } from "./teslamate.mjs";
-import { getRuntimeState, markScheduledPush, saveChargingMonitorState, saveTripMonitorState } from "./store.mjs";
+import { appendTripSignal, getRuntimeState, markScheduledPush, saveChargingMonitorState, saveTripMonitorState } from "./store.mjs";
 import { createTripDatabaseMonitor } from "./trip-monitor.mjs";
 import { summarizeTripState, TripSessionTracker, tripBoundaryDefaults } from "./trip-session.mjs";
 import { parseVehicleSignalTopic, tripSignalTopics } from "./vehicle-signals.mjs";
@@ -16,12 +18,15 @@ import { dueScheduledReport } from "./schedule.mjs";
 
 let stopping = false;
 const children = new Set();
-const seen = new Set();
+const processEvent = createEventProcessor();
+const timers = new Set();
+const signalWrites = createSerialQueue();
+const schedulerQueue = createSerialQueue();
 let mqttClient = null;
-let chargingQueue = Promise.resolve();
+const chargingQueue = createSerialQueue();
 let chargingTracker = null;
 let checkChargingDatabase = null;
-let tripQueue = Promise.resolve();
+const tripQueue = createSerialQueue();
 let tripTracker = null;
 let checkTripDatabase = null;
 
@@ -29,14 +34,8 @@ function log(message) {
   process.stdout.write(`[${new Date().toISOString()}] ${message}\n`);
 }
 
-function once(key) {
-  if (!key || seen.has(key)) return false;
-  seen.add(key);
-  if (seen.size > 2_000) seen.delete(seen.values().next().value);
-  return true;
-}
-
 function startConsumer(eventKey, handler) {
+  if (stopping) return;
   const child = spawnStreaming(config.larkCli, [
     "--profile", config.larkProfile,
     "event", "consume", eventKey,
@@ -48,15 +47,17 @@ function startConsumer(eventKey, handler) {
     try {
       const event = JSON.parse(line);
       const key = eventDedupeKey(eventKey, event);
-      if (!once(`${eventKey}:${key}`)) return;
-      Promise.resolve(handler(event)).catch((error) => log(`${eventKey} handler failed: ${error.message}`));
+      if (stopping || !key) return;
+      processEvent(`${eventKey}:${key}`, () => handler(event))
+        .catch((error) => log(`${eventKey} handler failed code=${safeErrorCode(error)}`));
     } catch {
       log(`${eventKey} emitted invalid JSON`);
     }
   });
   consumeLines(child.stderr, (line) => {
-    if (line.includes("[event] ready") || line.includes("feishu-websocket: connected")) log(line.trim());
-    else if (line.includes("\"ok\":false") || line.includes("WARN") || line.includes("exited")) log(`${eventKey}: ${line.trim().slice(0, 500)}`);
+    if (line.includes('[event] ready')) log(`${eventKey} [event] ready`);
+    else if (line.includes('feishu-websocket: connected')) log(`${eventKey} feishu-websocket: connected`);
+    else if (line.includes('"ok":false') || line.includes('WARN') || line.includes('exited')) log(`${eventKey} consumer warning`);
   });
   child.on("exit", (code, signal) => {
     children.delete(child);
@@ -102,15 +103,11 @@ async function deliverChargingQueue(source, at = new Date().toISOString()) {
 }
 
 function enqueueCharging(operation) {
-  const queued = chargingQueue.then(operation);
-  chargingQueue = queued.catch(() => {});
-  return queued;
+  return chargingQueue.enqueue(operation);
 }
 
-function enqueueTrip(operation) {
-  const queued = tripQueue.then(operation);
-  tripQueue = queued.catch(() => {});
-  return queued;
+function enqueueTrip(operation, key) {
+  return tripQueue.enqueue(operation, key);
 }
 
 function logTripStateTransition(source, before, after) {
@@ -171,6 +168,7 @@ async function startTripMonitor() {
   checkTripDatabase = async () => {
     const before = summarizeTripState(tripTracker.toJSON());
     const result = await runTripDatabaseCheck();
+    tripLastSuccess = Date.now();
     logTripStateTransition(before.phase === "idle" ? "startup_db" : "database", before, summarizeTripState(tripTracker.toJSON()));
     return result;
   };
@@ -192,6 +190,12 @@ async function startChargingMonitor() {
     },
     onEvents: observeTripChargingEvents
   });
+  const runChargingCheck = checkChargingDatabase;
+  checkChargingDatabase = async () => {
+    const result = await runChargingCheck();
+    chargingLastSuccess = Date.now();
+    return result;
+  };
   mqttClient = connect(config.mqttUrl, {
     clientId: `tesla-saving-ticket-${process.pid}`,
     clean: true,
@@ -217,21 +221,16 @@ async function startChargingMonitor() {
   });
   mqttClient.on("error", (error) => log(`MQTT error: ${error.message}`));
   mqttClient.on("message", (topic, payload, packet) => {
+    if (stopping) return;
     const observedAt = new Date().toISOString();
     const tripSignal = parseVehicleSignalTopic(topic, payload.toString("utf8"));
     if (tripSignal) {
-      enqueueTrip(async () => {
-        if (checkTripDatabase) await checkTripDatabase();
-        return persistTripMutation(
-          () => tripTracker?.observeVehicleSignal(
-            tripSignal.field,
-            tripSignal.value,
-            observedAt,
-            { retained: Boolean(packet?.retain) }
-          ),
-          `mqtt_${tripSignal.field}`
-        );
-      }).catch((error) => log(`trip signal check failed: ${error.message}`));
+      // Persist independently of the database/Feishu queue so a blocked send
+      // cannot prevent a short-lived edge from reaching durable storage.
+      signalWrites.enqueue(() => appendTripSignal({
+        id: randomUUID(), ...tripSignal, at: observedAt, retained: Boolean(packet?.retain)
+      })).then(() => checkTripDatabase && enqueueTrip(checkTripDatabase, 'database'))
+        .catch((error) => log(`trip signal check failed code=${safeErrorCode(error)}`));
     }
     const parsed = parseTeslaMateTopic(topic, payload.toString("utf8"));
     if (!parsed) return;
@@ -260,28 +259,59 @@ async function boot() {
   startConsumer("card.action.trigger", handleCardEvent);
   await startTripMonitor().catch((error) => log(`trip monitor failed: ${error.message}`));
   await startChargingMonitor().catch((error) => log(`charging monitor failed: ${error.message}`));
-  checkScheduledPush().catch((error) => log(`scheduler failed: ${error.message}`));
-  setInterval(() => checkScheduledPush().catch((error) => log(`scheduler failed: ${error.message}`)), 60_000).unref();
-  setInterval(() => {
+  const schedule = () => schedulerQueue.enqueue(checkScheduledPush, 'scheduled')
+    .catch((error) => log(`scheduler failed code=${safeErrorCode(error)}`));
+  schedule();
+  every(schedule, 60_000);
+  every(() => {
     if (!checkChargingDatabase) return;
-    enqueueCharging(() => checkChargingDatabase())
+    chargingQueue.enqueue(checkChargingDatabase, 'database')
       .catch((error) => log(`charging database check failed: ${error.message}`));
-  }, 60_000).unref();
-  setInterval(() => {
+  }, 60_000);
+  every(() => {
     if (!checkTripDatabase) return;
-    enqueueTrip(() => checkTripDatabase())
+    enqueueTrip(checkTripDatabase, 'database')
       .catch((error) => log(`trip database check failed: ${error.message}`));
-  }, tripBoundaryDefaults.pollMs).unref();
-  setInterval(() => refreshReferenceFuelPrices().catch((error) => log(`fuel reference refresh failed: ${error.message}`)), 6 * 60 * 60 * 1_000).unref();
+  }, tripBoundaryDefaults.pollMs);
+  every(() => refreshReferenceFuelPrices().catch((error) => log(`fuel reference refresh failed code=${safeErrorCode(error)}`)), 6 * 60 * 60 * 1_000);
+  every(reportHealth, 60_000);
 }
 
-function shutdown(signal) {
+let tripLastSuccess = null;
+let chargingLastSuccess = null;
+
+function every(operation, ms) {
+  const timer = setInterval(() => { if (!stopping) operation(); }, ms);
+  timer.unref();
+  timers.add(timer);
+}
+
+async function reportHealth() {
+  try {
+    const state = await getRuntimeState();
+    const pending = state.trip_signal_inbox || [];
+    log(`monitor_health consumers=${children.size} mqtt=${Boolean(mqttClient?.connected)}`
+      + ` handlers=${processEvent.size}`
+      + ` trip_queue=${tripQueue.size} charging_queue=${chargingQueue.size}`
+      + ` signal_pending=${pending.length}`
+      + ` signal_age_ms=${pending.length ? Math.max(0, Date.now() - Date.parse(pending[0].at)) : 0}`
+      + ` trip_success_age_ms=${tripLastSuccess ? Date.now() - tripLastSuccess : -1}`
+      + ` charging_success_age_ms=${chargingLastSuccess ? Date.now() - chargingLastSuccess : -1}`);
+  } catch (error) { log(`monitor_health failed code=${safeErrorCode(error)}`); }
+}
+
+async function shutdown(signal) {
   if (stopping) return;
   stopping = true;
   log(`worker stopping signal=${signal}`);
+  for (const timer of timers) clearInterval(timer);
   for (const child of children) child.kill("SIGTERM");
   mqttClient?.end(true);
-  setTimeout(() => process.exit(0), 5_000).unref();
+  const deadline = setTimeout(() => process.exit(0), 15_000);
+  await signalWrites.drain();
+  await Promise.all([tripQueue.drain(), chargingQueue.drain(), schedulerQueue.drain(), processEvent.drain()]);
+  clearTimeout(deadline);
+  process.exit(0);
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));

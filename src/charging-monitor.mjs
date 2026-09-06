@@ -1,3 +1,5 @@
+import { withQueryDeadline } from './query-runtime.mjs';
+
 export async function deliverPendingChargingEvents({
   tracker,
   getRuntimeState,
@@ -44,18 +46,14 @@ export function createChargingDatabaseMonitor({
   sendEvent,
   onEvents,
   now = () => new Date(),
-  timeoutMs = 3_000
+  timeoutMs = 10_000
 }) {
   let running = false;
   return async function checkChargingDatabase() {
     if (running) return { status: "busy", events: 0 };
     running = true;
     try {
-      let timer;
-      const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`charging database check timed out after ${timeoutMs}ms`)), timeoutMs);
-      });
-      const process = await Promise.race([getLatestProcess(), timeout]).finally(() => clearTimeout(timer));
+      const process = await withQueryDeadline(getLatestProcess, timeoutMs, 'charging database check');
       const observedAt = now().toISOString();
       const before = JSON.stringify(tracker.toJSON());
       const observedEvents = process ? tracker.reconcileProcess(process, observedAt) : [];

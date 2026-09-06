@@ -195,7 +195,7 @@ export function buildMenuCard(vehicle = null, options = {}) {
   const range = vehicle?.rated_range_km === null || vehicle?.rated_range_km === undefined ? null : `${vehicle.rated_range_km} km`;
   const status = updatedAt
     ? `车辆${stateNames[vehicle?.state] || vehicle?.state || "状态未知"} · ${fresh ? "更新于" : "最后记录"} ${formatClock(vehicle.updated_at)}`
-    : "等待 TeslaMate 首次同步";
+    : options.vehicleUnavailable ? "车辆状态暂时未取到，菜单功能仍可使用" : "等待 TeslaMate 首次同步";
   return cardShell("特斯拉小管家", "行程、车辆与充电账单", "特斯拉小管家功能菜单", [
     {
       tag: "column_set", flex_mode: "none",

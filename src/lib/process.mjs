@@ -6,6 +6,7 @@ export function runFile(file, args, options = {}) {
       cwd: options.cwd,
       env: options.env || process.env,
       timeout: options.timeout || 60_000,
+      signal: options.signal,
       maxBuffer: options.maxBuffer || 4 * 1024 * 1024,
       encoding: "utf8"
     }, (error, stdout, stderr) => {

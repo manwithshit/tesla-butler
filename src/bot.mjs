@@ -51,6 +51,8 @@ import {
 } from "./store.mjs";
 import { selectMainRoute } from "./routes.mjs";
 import { selectTripAdviceForTrip } from "./trip-insights.mjs";
+import { runUserAction } from './action-runtime.mjs';
+import { withQueryDeadline } from './query-runtime.mjs';
 
 const textActions = new Map([
   ["菜单", "menu"], ["帮助", "menu"],
@@ -73,13 +75,18 @@ function idempotency(prefix, value) {
 
 export async function runFeishuCli(stage, args, options = {}, dependencies = {}) {
   const execute = dependencies.runFile || runFile;
+  const started = Date.now();
+  let status = 'success';
   try {
     return await execute(config.larkCli, args, { cwd: config.root, ...options });
   } catch {
+    status = 'failed';
     const error = new Error(`Feishu CLI operation failed stage=${stage}`);
     error.code = "FEISHU_CLI_FAILED";
     error.stage = stage;
     throw error;
+  } finally {
+    process.stdout.write(`[${new Date().toISOString()}] feishu_operation stage=${stage} status=${status} duration_ms=${Date.now() - started}\n`);
   }
 }
 
@@ -212,8 +219,13 @@ async function makePeriodCard(period) {
   return buildPeriodReportCard({ period, trips, receipts, comparisons, tripElectricCost, mainRoute, pricingSummary });
 }
 
-async function makeMenuCard() {
-  return buildMenuCard(await getVehicleOverview());
+export async function makeMenuCard({ getVehicle = getVehicleOverview, timeoutMs = 1_200 } = {}) {
+  try {
+    return buildMenuCard(await withQueryDeadline(getVehicle, timeoutMs, 'menu vehicle query'));
+  } catch {
+    process.stdout.write(`[${new Date().toISOString()}] menu vehicle_status=unavailable\n`);
+    return buildMenuCard(null, { vehicleUnavailable: true });
+  }
 }
 
 async function makeDefaultElectricityPriceCard() {
@@ -252,8 +264,7 @@ async function getTripAdvice(trip) {
 }
 
 async function makeTripGroupCard(trip) {
-  const [route, pricingSummary, advice] = await Promise.all([
-    trip?.segment_ids?.length ? getDriveGroupRoute(trip.segment_ids) : Promise.resolve([]),
+  const [pricingSummary, advice] = await Promise.all([
     trip?.segment_ids?.length ? getElectricityCostSummary(trip.segment_ids) : Promise.resolve(null),
     getTripAdvice(trip)
   ]);
@@ -268,7 +279,7 @@ async function makeTripGroupCard(trip) {
   }))}`;
   const image = await resolveRouteImage({
     cacheKey,
-    route,
+    getRoute: () => trip?.segment_ids?.length ? getDriveGroupRoute(trip.segment_ids) : Promise.resolve([]),
     labels: {
       start: trip?.start_road,
       end: trip?.end_road
@@ -670,7 +681,11 @@ export async function handleMessageEvent(event, dependencies = {}) {
     await ops.replyText(event.message_id, "可用指令：菜单、行程小结、本周小结、本月小结、车辆概览、默认电价。也可以直接发送充电账单图片。", `${event.message_id}:unknown`);
     return;
   }
-  await ops.runAction(action, { messageId: event.message_id, chatId: event.chat_id });
+  return runUserAction(action, { messageId: event.message_id, chatId: event.chat_id }, {
+    execute: ops.runAction,
+    notify: text => ops.replyText(event.message_id, text, `${event.message_id}:query-failed`),
+    log: message => process.stdout.write(`[${new Date().toISOString()}] ${message}\n`)
+  });
 }
 
 export async function handleReceiptAction(event, dependencies = {}) {
@@ -705,6 +720,7 @@ export async function handleReceiptAction(event, dependencies = {}) {
 
 export async function handleCardEvent(event, dependencies = {}) {
   const ops = {
+    sendText,
     registerChat,
     handleDefaultRateSubmission,
     runAction,
@@ -730,8 +746,11 @@ export async function handleCardEvent(event, dependencies = {}) {
   }
   const action = value.action;
   if (["menu", "latest_trip", "weekly_report", "monthly_report", "upload_receipt_help", "vehicle_overview", "default_electricity_price"].includes(action)) {
-    await ops.runAction(action, { chatId: event.chat_id, eventId: event.event_id });
-    return;
+    return runUserAction(action, { chatId: event.chat_id, eventId: event.event_id }, {
+      execute: ops.runAction,
+      notify: text => ops.sendText(event.chat_id, text, `${event.event_id}:query-failed`),
+      log: message => process.stdout.write(`[${new Date().toISOString()}] ${message}\n`)
+    });
   }
   if (action === "confirm_receipt" || action === "ignore_receipt") {
     await ops.handleReceiptAction({

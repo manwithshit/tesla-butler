@@ -39,6 +39,115 @@ function monitorOptions(overrides = {}) {
   };
 }
 
+test('persisted door and lock signals survive database failure and restart, preserving the original boundary', async () => {
+  let state = { chat_id: 'fixture', trip_monitor: { initialized: true, last_processed_drive_id: 8 },
+    trip_signal_inbox: [
+      ['locked', false, '10:20:00', true],
+      ['driver_front_door_open', false, '10:20:00', true],
+      ['driver_front_door_open', true, '10:20:01', false],
+      ['driver_front_door_open', false, '10:20:02', false],
+      ['locked', true, '10:20:03', false]
+    ].map(([field, value, time, retained], id) => ({ id: String(id), field, value, at: `2026-08-26T${time}Z`, retained })) };
+  const sent = [];
+  const options = () => monitorOptions({
+    tracker: new TripSessionTracker(state.trip_monitor),
+    getRuntimeState: async () => structuredClone(state),
+    saveState: async (next, { signalIds = [] } = {}) => {
+      state.trip_monitor = structuredClone(next);
+      state.trip_signal_inbox = state.trip_signal_inbox.filter(s => !signalIds.includes(s.id));
+    },
+    sendTrip: async (_chat, event) => sent.push(event),
+    now: () => new Date('2026-08-26T10:21:00Z')
+  });
+  const fail = createTripDatabaseMonitor({ ...options(), getSnapshot: async () => { throw new Error('offline'); } });
+  await assert.rejects(fail(), /offline/);
+  assert.equal(state.trip_signal_inbox.length, 5);
+  const recover = createTripDatabaseMonitor(options());
+  await recover();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].reason, 'locked');
+  assert.deepEqual(sent[0].segment_ids, [9]);
+  assert.equal(state.trip_signal_inbox.length, 0);
+  await createTripDatabaseMonitor(options())();
+  assert.equal(sent.length, 1);
+});
+
+test('recovered parked lock ends its journey even when the next drive already completed during the outage', async () => {
+  const tracker = new TripSessionTracker({ initialized: true, last_processed_drive_id: 8 });
+  const sent = [];
+  const signals = [
+    { id: 'a', field: 'locked', value: false, at: '2026-08-26T10:20:00Z', retained: true },
+    { id: 'b', field: 'locked', value: true, at: '2026-08-26T10:20:01Z', retained: false }
+  ];
+  await createTripDatabaseMonitor(monitorOptions({ tracker,
+    getRuntimeState: async () => ({ chat_id: 'fixture', trip_signal_inbox: signals }),
+    getSnapshot: async () => ({ completed: [drive(9), drive(10, '2026-08-26T10:25:00Z', '2026-08-26T10:30:00Z')], active: null }),
+    now: () => new Date('2026-08-26T10:31:00Z'),
+    sendTrip: async (_chat, event) => sent.push(event.segment_ids)
+  }))();
+  assert.deepEqual(sent, [[9]]);
+  assert.deepEqual(tracker.toJSON().session.segment_ids, [10]);
+});
+
+test('a failed durable acknowledgement keeps the event retryable with the same delivery key', async () => {
+  const tracker = new TripSessionTracker(pendingState());
+  const keys = []; let fail = true;
+  const check = createTripDatabaseMonitor(monitorOptions({ tracker,
+    sendTrip: async (_chat, _event, key) => keys.push(key),
+    saveState: async () => { if (fail) { fail = false; throw new Error('disk failure'); } }
+  }));
+  await assert.rejects(check(), /disk failure/);
+  assert.equal(tracker.pendingEvents().length, 1);
+  await check();
+  assert.deepEqual(keys, ['trip-9', 'trip-9']);
+  assert.equal(tracker.pendingEvents().length, 0);
+});
+
+test('recovered in-motion auto-lock and retained parked lock do not create a new boundary', async () => {
+  for (const [at, retained] of [['2026-08-26T10:10:00Z', false], ['2026-08-26T10:20:01Z', true]]) {
+    const tracker = new TripSessionTracker({initialized:true,last_processed_drive_id:8});
+    const sent=[];
+    const signals=[
+      {id:'baseline',field:'locked',value:false,at:'2026-08-26T10:00:00Z',retained:true},
+      {id:'edge',field:'locked',value:true,at,retained}
+    ];
+    await createTripDatabaseMonitor(monitorOptions({tracker,
+      getRuntimeState:async()=>({chat_id:'fixture',trip_signal_inbox:signals}),
+      now:()=>new Date('2026-08-26T10:21:00Z'),
+      sendTrip:async (_chat,event)=>sent.push(event)
+    }))();
+    assert.equal(sent.length,0);
+    assert.equal(tracker.toJSON().session.phase,'parked');
+  }
+});
+
+test('a failed inbox commit rolls back in-memory changes before retry', async () => {
+  const tracker=new TripSessionTracker({initialized:true,last_processed_drive_id:8});
+  const original=tracker.toJSON(); let fail=true;
+  const check=createTripDatabaseMonitor(monitorOptions({tracker, saveState:async()=>{
+    if(fail){fail=false;throw new Error('disk failure');}
+  }}));
+  await assert.rejects(check(),/disk failure/);
+  assert.deepEqual(tracker.toJSON(),original);
+  await check();
+  assert.deepEqual(tracker.toJSON().session.segment_ids,[9]);
+});
+
+test('garage payment followed by a long drive stays one journey when a delayed lock occurred in motion', async () => {
+  const tracker = new TripSessionTracker({initialized:true,last_processed_drive_id:8});
+  const sent=[];
+  await createTripDatabaseMonitor(monitorOptions({ tracker,
+    getRuntimeState:async()=>({chat_id:'fixture',trip_signal_inbox:[
+      {id:'baseline',field:'locked',value:false,at:'2026-08-26T09:59:00Z',retained:true},
+      {id:'auto',field:'locked',value:true,at:'2026-08-26T10:04:00Z',retained:false}
+    ]}),
+    getSnapshot:async()=>({completed:[drive(9,'2026-08-26T10:00:00Z','2026-08-26T10:01:00Z'),drive(10,'2026-08-26T10:03:00Z','2026-08-26T11:00:00Z')],active:null}),
+    now:()=>new Date('2026-08-26T11:01:00Z'),sendTrip:async(_chat,event)=>sent.push(event)
+  }))();
+  assert.equal(sent.length,0);
+  assert.deepEqual(tracker.toJSON().session.segment_ids,[9,10]);
+});
+
 test("the first database check establishes a baseline without replaying history", async () => {
   const sent = [];
   const tracker = new TripSessionTracker();

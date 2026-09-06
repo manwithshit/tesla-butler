@@ -151,6 +151,10 @@ export class TripSessionTracker {
     this.state = normalizeState(saved);
   }
 
+  restore(saved) {
+    this.state = normalizeState(saved);
+  }
+
   reconcile(snapshot, at = new Date().toISOString()) {
     const completed = snapshot?.completed || [];
     if (!this.state.initialized) {
