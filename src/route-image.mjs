@@ -77,7 +77,7 @@ async function resolveImage(request, dependencies) {
       mapMeta: { hasBasemap: false, hasEnergyOverlay: false }
     };
   }
-  log({ status: "success", stage: "render", cacheHit: false, durationMs: now() - renderStarted });
+  log({ status: preview.hasBasemap === false && preview.hasRoute ? "degraded" : "success", stage: "render", cacheHit: false, durationMs: now() - renderStarted });
   let imageKey;
   const uploadStarted = now();
   try {

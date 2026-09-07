@@ -24,3 +24,27 @@ test('signal inbox and tracker commit atomically without removing concurrently a
     assert.equal(mode, 0o600);
   } finally { await fs.rm(root, {recursive:true,force:true}); }
 });
+
+test('map repair tasks persist privately across restarts and do not overwrite concurrent state', async () => {
+  const base = path.resolve('data/processed');
+  await fs.mkdir(base, { recursive: true });
+  const root = await fs.mkdtemp(path.join(base, 'map-repair-store-test-'));
+  const run = script => spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    encoding: 'utf8', env: { ...process.env, TICKET_PROJECT_ROOT: root }
+  });
+  try {
+    const first = run(`import {setMapCardRepair,updateMapCardRepair,markScheduledPush} from './src/store.mjs';
+      await setMapCardRepair('first',{attempts:0});
+      await Promise.all([updateMapCardRepair('first',{attempts:1}),setMapCardRepair('second',{attempts:0}),markScheduledPush('fixture')]);
+      await setMapCardRepair('first',{attempts:0});`);
+    assert.equal(first.status, 0);
+    const second = run(`import {getRuntimeState,updateMapCardRepair} from './src/store.mjs';
+      const before = await getRuntimeState();
+      await updateMapCardRepair('first',null);
+      const after = await getRuntimeState();
+      console.log(JSON.stringify({attempt:before.map_card_repairs.first.attempts,count:Object.keys(after.map_card_repairs).length,sent:Boolean(after.sent.fixture)}));`);
+    assert.equal(second.status, 0);
+    assert.deepEqual(JSON.parse(second.stdout), {attempt:1,count:1,sent:true});
+    assert.equal((await fs.stat(path.join(root, 'data/processed/runtime-state.json'))).mode & 0o777, 0o600);
+  } finally { await fs.rm(root, {recursive:true,force:true}); }
+});

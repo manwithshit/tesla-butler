@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { config, projectPath } from "./config.mjs";
 import { runFile } from "./lib/process.mjs";
+import { safeErrorCode } from './worker-runtime.mjs';
 
 const WIDTH = 1200;
 const HEIGHT = 560;
@@ -290,17 +291,23 @@ async function writeFallbackPng(route, pngPath, safeKey) {
   }
 }
 
-async function renderMapPng(points, pngPath, safeKey, labels) {
+async function renderMapPng(points, pngPath, safeKey, labels, io) {
+  let stage = 'bounds';
+  try {
   const fit = fitMap(points);
   const centerTileX = Math.floor((fit.originX + WIDTH / 2) / TILE_SIZE);
   const centerTileY = Math.floor((fit.originY + HEIGHT / 2) / TILE_SIZE);
-  const response = await fetch(tileUrl(centerTileX, centerTileY, fit.zoom), { signal: AbortSignal.timeout(6_000) });
+  stage = 'tile_fetch';
+  const response = await io.fetch(tileUrl(centerTileX, centerTileY, fit.zoom), { signal: AbortSignal.timeout(6_000) });
   if (!response.ok || !String(response.headers.get("content-type")).startsWith("image/")) throw new Error("map tile unavailable");
+  await response.arrayBuffer();
+  stage = 'local_file';
   const htmlPath = path.join(path.dirname(pngPath), `${safeKey}.html`);
   await fs.writeFile(htmlPath, mapHtml(points, fit, labels), { mode: 0o600 });
   await fs.rm(pngPath, { force: true });
   try {
-    await runFile(config.chromeCli, [
+    stage = 'browser_render';
+    await io.runFile(config.chromeCli, [
       "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
       "--force-device-scale-factor=1", `--window-size=${WIDTH},${HEIGHT}`,
       "--virtual-time-budget=8000", `--screenshot=${pngPath}`,
@@ -309,11 +316,19 @@ async function renderMapPng(points, pngPath, safeKey, labels) {
   } finally {
     await fs.rm(htmlPath, { force: true });
   }
+  stage = 'image_check';
   const stats = await fs.stat(pngPath);
   if (stats.size < 10_000) throw new Error("rendered map image is unexpectedly small");
+  } catch (cause) {
+    const error = new Error('Basemap unavailable');
+    error.stage = stage;
+    error.code = cause?.killed ? 'RENDER_TIMEOUT' : safeErrorCode(cause);
+    throw error;
+  }
 }
 
-export async function renderRoutePreview(route, key = "current", labels = {}) {
+export async function renderRoutePreview(route, key = "current", labels = {}, dependencies = {}) {
+  const io = { fetch, runFile, ...dependencies };
   const cleanRoute = Array.isArray(route)
     ? route.filter((point) => Number.isFinite(Number(point.lat)) && Number.isFinite(Number(point.lng)))
     : [];
@@ -324,9 +339,12 @@ export async function renderRoutePreview(route, key = "current", labels = {}) {
   const pngPath = path.join(dir, `${safeKey}.png`);
   if (converted.length >= 2) {
     try {
-      await renderMapPng(converted, pngPath, safeKey, labels);
+      await renderMapPng(converted, pngPath, safeKey, labels, io);
       return { path: pngPath, hasRoute: true, hasBasemap: true, hasEnergyOverlay: true };
-    } catch {
+    } catch (error) {
+      const event = { status: 'failed', stage: error.stage || 'unknown', code: safeErrorCode(error) };
+      if (io.log) io.log(event);
+      else process.stdout.write(`[${new Date().toISOString()}] map_basemap status=failed stage=${event.stage} code=${event.code}\n`);
       await writeFallbackPng(converted, pngPath, safeKey);
       return { path: pngPath, hasRoute: true, hasBasemap: false, hasEnergyOverlay: true };
     }

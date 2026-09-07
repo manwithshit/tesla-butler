@@ -478,6 +478,29 @@ export async function getRouteImageCache() {
   return state.route_image_cache || {};
 }
 
+export async function getMapCardRepairs() {
+  return (await getRuntimeState()).map_card_repairs || {};
+}
+
+export async function setMapCardRepair(key, job) {
+  await updateRuntimeState((state) => {
+    state.map_card_repairs ||= {};
+    if (job) state.map_card_repairs[key] ||= job;
+    else delete state.map_card_repairs[key];
+    return state;
+  });
+}
+
+export async function updateMapCardRepair(key, job) {
+  await updateRuntimeState((state) => {
+    state.map_card_repairs ||= {};
+    if (job) {
+      if (state.map_card_repairs[key]) state.map_card_repairs[key] = job;
+    } else delete state.map_card_repairs[key];
+    return state;
+  });
+}
+
 export async function setRouteImageCacheEntry(key, entry) {
   await updateRuntimeState((state) => {
     state.route_image_cache ||= {};

@@ -351,6 +351,10 @@ export function buildLatestTripCard(trip, imageKey = null, hasRoute = false, map
       metricColumn("行驶时长", hasTrip ? formatValue(trip.duration_min, " 分钟") : "--", { compact: true })
     ], "none"),
     routeElement,
+    ...(imageKey && hasRoute && mapMeta.hasBasemap === false ? [{
+      tag: "markdown", text_size: "notation",
+      content: "<font color='grey'>底图暂不可用，已保留真实轨迹</font>"
+    }] : []),
     { tag: "div", fields: [
       field("路线概览", hasTrip ? routeName : "--"),
       field("行程时间", hasTrip ? formatTripTimeRange(trip.start_at, trip.end_at) : "--"),

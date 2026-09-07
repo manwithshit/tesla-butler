@@ -2,7 +2,7 @@ import { config } from "./config.mjs";
 import { randomUUID } from 'node:crypto';
 import { createEventProcessor, createSerialQueue, safeErrorCode } from './worker-runtime.mjs';
 import { connect } from "mqtt";
-import { handleCardEvent, handleMessageEvent, sendChargingEvent, sendCompletedTrip, sendScheduledReport } from "./bot.mjs";
+import { handleCardEvent, handleMessageEvent, retryPendingMapCards, sendChargingEvent, sendCompletedTrip, sendScheduledReport } from "./bot.mjs";
 import { ChargingTracker, parseTeslaMateTopic } from "./charging.mjs";
 import { createChargingDatabaseMonitor, deliverPendingChargingEvents } from "./charging-monitor.mjs";
 import { consumeLines } from "./lib/lines.mjs";
@@ -22,6 +22,7 @@ const processEvent = createEventProcessor();
 const timers = new Set();
 const signalWrites = createSerialQueue();
 const schedulerQueue = createSerialQueue();
+const mapRepairQueue = createSerialQueue();
 let mqttClient = null;
 const chargingQueue = createSerialQueue();
 let chargingTracker = null;
@@ -275,6 +276,10 @@ async function boot() {
   }, tripBoundaryDefaults.pollMs);
   every(() => refreshReferenceFuelPrices().catch((error) => log(`fuel reference refresh failed code=${safeErrorCode(error)}`)), 6 * 60 * 60 * 1_000);
   every(reportHealth, 60_000);
+  const repairMaps = () => mapRepairQueue.enqueue(retryPendingMapCards, 'map_repair')
+    .catch(error => log(`map_card_repair status=failed code=${safeErrorCode(error)}`));
+  repairMaps();
+  every(repairMaps, 15_000);
 }
 
 let tripLastSuccess = null;
@@ -309,7 +314,7 @@ async function shutdown(signal) {
   mqttClient?.end(true);
   const deadline = setTimeout(() => process.exit(0), 15_000);
   await signalWrites.drain();
-  await Promise.all([tripQueue.drain(), chargingQueue.drain(), schedulerQueue.drain(), processEvent.drain()]);
+  await Promise.all([tripQueue.drain(), chargingQueue.drain(), schedulerQueue.drain(), mapRepairQueue.drain(), processEvent.drain()]);
   clearTimeout(deadline);
   process.exit(0);
 }

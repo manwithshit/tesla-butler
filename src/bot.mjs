@@ -22,6 +22,7 @@ import { getElectricityCostSummary } from "./electricity-cost-service.mjs";
 import { refreshReferenceFuelPrices } from "./fuel-prices.mjs";
 import { renderRoutePreview } from "./map.mjs";
 import { resolveRouteImage } from "./route-image.mjs";
+import { createMapRepairProcessor, patchSentMapCard, trackMapCardDelivery } from './map-card-recovery.mjs';
 import {
   getDriveRoute,
   getDriveGroup,
@@ -40,6 +41,9 @@ import {
   getDefaultRatePromptedAt,
   getPricingSettings,
   getRouteImageCache,
+  getMapCardRepairs,
+  setMapCardRepair,
+  updateMapCardRepair,
   markDefaultRatePrompted,
   opaqueId,
   registerChat,
@@ -68,6 +72,36 @@ const textActions = new Map([
 function cliArgs() {
   return ["--profile", config.larkProfile];
 }
+
+// Keep repair metadata out of the outgoing Feishu card JSON.
+const mapCardMetadata = new WeakMap();
+
+async function rememberMapCardDelivery(card, response) {
+  const result = await trackMapCardDelivery(card, mapCardMetadata.get(card), response, {
+    save: job => setMapCardRepair(opaqueId(job.message_id), job)
+  });
+  if (result.status !== 'not_needed') {
+    process.stdout.write(`[${new Date().toISOString()}] map_card_repair status=${result.status}\n`);
+  }
+}
+
+export const retryPendingMapCards = createMapRepairProcessor({
+  read: getMapCardRepairs,
+  save: updateMapCardRepair,
+  resolve: job => resolveRouteImage({
+    cacheKey: job.cache_key,
+    getRoute: () => getDriveGroupRoute(job.segment_ids)
+  }, {
+    readCache: getRouteImageCache, writeCache: setRouteImageCacheEntry,
+    render: renderRoutePreview, upload: uploadCardImage, log: logRouteImage
+  }),
+  patch: (messageId, card) => {
+    assertCard(card);
+    return patchSentMapCard(messageId, card,
+      args => runFeishuCli('update_map_card', [...cliArgs(), ...args], { timeout: 30_000 }));
+  },
+  log: event => process.stdout.write(`[${new Date().toISOString()}] map_card_repair status=${event.status} attempt=${event.attempt}${event.code ? ` code=${event.code}` : ''}\n`)
+});
 
 function idempotency(prefix, value) {
   return `${prefix}-${opaqueId(value)}`.slice(0, 50);
@@ -102,7 +136,7 @@ async function replyText(messageId, text, key = messageId) {
 
 async function replyCard(messageId, card, key = messageId) {
   assertCard(card);
-  await runFeishuCli("reply_card", [
+  const response = await runFeishuCli("reply_card", [
     ...cliArgs(), "im", "+messages-reply",
     "--message-id", messageId,
     "--msg-type", "interactive",
@@ -110,6 +144,7 @@ async function replyCard(messageId, card, key = messageId) {
     "--as", "bot",
     "--idempotency-key", idempotency("card", key)
   ]);
+  await rememberMapCardDelivery(card, response);
 }
 
 async function replyFormCard(messageId, card, key = messageId) {
@@ -126,7 +161,7 @@ async function replyFormCard(messageId, card, key = messageId) {
 
 async function sendCard(chatId, card, key) {
   assertCard(card);
-  await runFeishuCli("send_card", [
+  const response = await runFeishuCli("send_card", [
     ...cliArgs(), "im", "+messages-send",
     "--chat-id", chatId,
     "--msg-type", "interactive",
@@ -134,6 +169,7 @@ async function sendCard(chatId, card, key) {
     "--as", "bot",
     "--idempotency-key", idempotency("card", key)
   ]);
+  await rememberMapCardDelivery(card, response);
 }
 
 async function sendFormCard(chatId, card, key) {
@@ -291,11 +327,15 @@ async function makeTripGroupCard(trip) {
     upload: uploadCardImage,
     log: logRouteImage
   });
-  return buildLatestTripCard(trip, image.imageKey || null, image.hasRoute, {
+  const card = buildLatestTripCard(trip, image.imageKey || null, image.hasRoute, {
     ...image.mapMeta,
     failureStage: image.failureStage,
     advice
   });
+  if (image.imageKey && image.hasRoute && image.mapMeta?.hasBasemap === false && trip.segment_ids?.length) {
+    mapCardMetadata.set(card, { cacheKey, segmentIds: trip.segment_ids });
+  }
+  return card;
 }
 
 function makeSimulatedPeriodCard(period, mainRoute = undefined) {
