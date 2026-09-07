@@ -11,3 +11,13 @@
 接口依据：[飞书更新已发送消息卡片](https://open.feishu.cn/document/server-docs/im-v1/message-card/patch.md)。原卡和新卡均 update_multi=true，同一机器人身份 PATCH，14 天内可更新。本功能更严格限制为一小时。
 
 验收：灰字位置/条件；五分钟前不请求；恢复只替换原图；失败/重启/重复轮询；三轮上限/过期；发送与回复引用捕获；飞书错误响应不当作成功；全量单测与语法检查。真实飞书更新需区别模拟验收，不制造无关测试消息。
+
+## M1 本机验收
+
+- 业务提交：`7da4386`；整合到原本机试运行分支，未修改 main、未远端推送。
+- 全量测试 262/262 通过，44 个源文件语法检查通过，差异格式与敏感模式检查通过。
+- 真实只读检查：`test:live`、`test:trip-live`、`test:charging-live`、`test:trip-session-live`、`test:pricing-live` 全部通过。
+- 沿用原 LaunchAgent，SIGTERM 有界收尾后 KeepAlive 自动拉起新 Worker；未重启或重建 Docker 服务。
+- 新进程观察 116 秒：Worker 存活、consumer 2/2 ready、MQTT 与行程/充电 DB 监控就绪；四容器运行、database healthy；关键错误 0，行程推送 0；账本哈希与周/月发送记录均未改变。
+- 重试的时钟、网络恢复、原卡 PATCH、失败/重启/过期、私有持久化已用自动化边界测试验证。没有主动发送测试卡，也没有操作历史消息；真实飞书原卡更新仍待下一次新卡底图降级后验收，不能当作已实车/实消息验证。
+- 备份保留于本机忽略目录 `data/processed/deployment-backups/map-recovery-20260907.QYrYWh/`，不进入 Git。
