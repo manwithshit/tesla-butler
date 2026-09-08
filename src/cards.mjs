@@ -1,3 +1,5 @@
+import {validateReceipt} from './receipt-values.mjs';
+
 function callback(action, extra = {}) {
   return [{ type: "callback", value: { action, ...extra } }];
 }
@@ -631,6 +633,8 @@ export function buildUploadHelpCard() {
 
 export function buildReceiptCard(receipt) {
   const fields = receipt.fields;
+  const issue=receipt.draft_issue || validateReceipt(fields);
+  const actionValue={receipt_id:receipt.id,...(receipt.revision ? {revision:receipt.revision}: {})};
   const confidence = fields.confidence === null ? "未知" : `${Math.round(fields.confidence * 100)}%`;
   const confidenceLabel = fields.recognition_source === "apple_vision" ? "字段完整度" : "识别置信度";
   const money = (value) => value === null || value === undefined ? "暂无" : `¥${Number(value).toFixed(2)}`;
@@ -645,7 +649,8 @@ export function buildReceiptCard(receipt) {
   }[fields.energy_source] || "识别结果";
   const recognitionTag = fields.recognition_source === "apple_vision"
     ? "本地识别"
-    : fields.recognition_source === "k3_fallback" ? "K3 增强识别" : "识别结果";
+    : fields.recognition_source === "k3_fallback" ? "K3 增强识别"
+      : fields.recognition_source === "user_text" ? "用户文字补充" : "识别结果";
   const match = receipt.charging_match;
   const formatCandidateTime = (value) => {
     const found = String(value || "").match(/^\d{4}-(\d{2})-(\d{2}) (\d{2}:\d{2})$/);
@@ -679,7 +684,7 @@ export function buildReceiptCard(receipt) {
         elements: [
           { tag: "markdown", content: "**请选择对应的车辆充电记录**", text_size: "notation" },
           button(candidateLabel(candidate), "select_receipt_match", {
-            extra: { receipt_id: receipt.id, process_id: String(candidate.process_id) }
+            extra: { ...actionValue, process_id: String(candidate.process_id) }
           })
         ]
       }))
@@ -691,7 +696,7 @@ export function buildReceiptCard(receipt) {
     };
   }
   const confirmLabel = match?.status === "needs_confirmation" ? "不关联，直接记账" : "确认记账";
-  return cardShell("充电账单待确认", "确认后计入周结和月结", "充电账单待确认", [
+  return cardShell(issue ? "充电账单待补充" : "充电账单待确认", "草稿不会入账，核对后再确认", "充电账单草稿", [
     {
       tag: "column_set", flex_mode: "bisect", horizontal_spacing: "12px",
       columns: [
@@ -711,9 +716,10 @@ export function buildReceiptCard(receipt) {
         { tag: "markdown", content: `<font color='grey'>电量来源：${energySource}</font>`, text_size: "notation" }
       ]
     }] },
-    { tag: "div", fields: [field("充电时间", formatValue(fields.charged_at)), field(confidenceLabel, confidence), field("运营商", formatValue(fields.provider), false)] },
+    { tag: "div", fields: [field("充电时间", formatValue(fields.charged_at)), field(confidenceLabel, confidence), field("运营商", formatValue(fields.provider), false),
+      field("补充或纠正", `${issue ? `${issue}\n` : "请核对识别结果。\n"}可直接回复“充了30度”“金额应该是24元”，也可说“昨天充了30度，花了24元”。时间未提供时不会猜测具体充电时间。`,false)] },
     ...(matchElement ? [matchElement] : []),
-    buttonRow(button(confirmLabel, "confirm_receipt", { primary: true, extra: { receipt_id: receipt.id } }), button("忽略", "ignore_receipt", { extra: { receipt_id: receipt.id } }))
+    buttonRow(...(!issue ? [button(confirmLabel, "confirm_receipt", { primary: true, extra: actionValue })] : []), button("忽略", "ignore_receipt", { extra: actionValue }))
   ], { width: "default", tag: recognitionTag });
 }
 

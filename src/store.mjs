@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import { projectPath } from "./config.mjs";
+import {normalizeReceiptResult, validateReceipt} from './receipt-values.mjs';
 
 const storePath = projectPath("data", "processed", "receipts.json");
 const runtimePath = projectPath("data", "processed", "runtime-state.json");
@@ -154,6 +155,10 @@ export function normalizeReceiptFields(fields, receivedAt = new Date()) {
         ? "explicit_receipt"
         : normalized.charged_at_source;
     }
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    normalized.charged_at_source='date_only';
+    normalized.accounting_at=raw;
+    normalized.accounting_at_source='explicit_receipt_date';
   }
   return normalized;
 }
@@ -236,7 +241,7 @@ export function ensureReceiptAccounting(receipt) {
   return receipt;
 }
 
-export async function savePendingReceipt({ messageId, imagePath, fields, chargingMatch, receivedAt = new Date() }, options = {}) {
+export async function savePendingReceipt({ messageId, imagePath, fields, chargingMatch, chatId, receivedAt = new Date() }, options = {}) {
   return updateReceiptStore((store) => {
     const id = opaqueId(messageId);
     if (store.receipts[id]) {
@@ -248,6 +253,7 @@ export async function savePendingReceipt({ messageId, imagePath, fields, chargin
       source_message_hash: opaqueId(messageId),
       image_path: imagePath,
       status: "pending",
+      ...(chatId ? { chat_hash: opaqueId(chatId), revision: 1, draft_issue: fields.draft_issue || null } : {}),
       fields: normalizeReceiptFields(fields, createdAt),
       created_at: createdAt.toISOString()
     };
@@ -255,6 +261,33 @@ export async function savePendingReceipt({ messageId, imagePath, fields, chargin
     store.receipts[id] = receipt;
     return { changed: true, value: receipt };
   }, options);
+}
+
+export async function updateReceiptFromText({chatId,messageId,patch,receivedAt=new Date()},options={}) {
+  return updateReceiptStore(store=>{
+    const owner=opaqueId(chatId), message=opaqueId(messageId);
+    const replay=Object.values(store.receipts).find(r=>r.chat_hash===owner && r.text_message_hashes?.includes(message));
+    if(replay)return {changed:false,value:replay};
+    const pending=Object.values(store.receipts).filter(r=>r.chat_hash===owner && r.status==='pending');
+    if(pending.length>1)throw Object.assign(new Error('请先确认或忽略其他草稿，再补充这笔账单。'),{code:'RECEIPT_DRAFT_AMBIGUOUS'});
+    let receipt=pending[0];
+    if(!receipt){
+      if(patch.amount_cny===undefined || patch.energy_kwh===undefined)throw Object.assign(new Error('请先发送账单图片，或一次说明实付金额和充电电量。'),{code:'RECEIPT_DRAFT_MISSING'});
+      receipt={id:message,source_message_hash:message,chat_hash:owner,status:'pending',fields:{},revision:0,created_at:new Date(receivedAt).toISOString()};
+      store.receipts[message]=receipt;
+    }
+    const fields={...receipt.fields,...patch};
+    // A corrected total must not retain a stale OCR-derived price or fee split.
+    for(const key of ['electricity_fee_cny','service_fee_cny','electricity_unit_price_cny_per_kwh','service_unit_price_cny_per_kwh','all_in_unit_price_cny_per_kwh'])fields[key]=null;
+    if(patch.energy_kwh===undefined && receipt.fields.energy_source?.startsWith('derived'))fields.energy_kwh=null;
+    receipt.fields=normalizeReceiptFields(normalizeReceiptResult(fields,'user_text'),new Date(receipt.created_at));
+    receipt.charging_match={status:'unlinked',selected_process_id:null,candidates:[],confidence:null};
+    receipt.draft_issue=null;
+    receipt.revision++;
+    receipt.text_message_hashes=[...(receipt.text_message_hashes||[]),message];
+    receipt.updated_at=new Date(receivedAt).toISOString();
+    return {changed:true,value:receipt};
+  },options);
 }
 
 export async function getReceipt(id) {
@@ -266,7 +299,10 @@ export async function selectReceiptChargingMatch(id, processId, options = {}) {
   return updateReceiptStore((store) => {
     const receipt = store.receipts[id];
     if (!receipt || receipt.status !== "pending") return { changed: false, value: null };
+    if(receipt.chat_hash && (receipt.chat_hash!==opaqueId(options.chatId) || receipt.revision!==options.revision))
+      throw Object.assign(new Error('stale draft'),{code:'RECEIPT_DRAFT_STALE'});
     if (!selectReceiptChargingCandidate(receipt, processId)) return { changed: false, value: null };
+    if(receipt.revision)receipt.revision++;
     receipt.updated_at = new Date().toISOString();
     return { changed: true, value: receipt };
   }, options);
@@ -311,6 +347,14 @@ export function applyReceiptStatus(storeValue, id, status, now = new Date()) {
 
 export async function setReceiptStatus(id, status, options = {}) {
   return updateReceiptStore((store) => {
+    const current=store.receipts[id];
+    if(current?.chat_hash){
+      if(current.chat_hash!==opaqueId(options.chatId) || current.revision!==options.revision)
+        throw Object.assign(new Error('请使用最新草稿卡片确认。'),{code:'RECEIPT_DRAFT_STALE'});
+      if(current.status!=='pending')return {changed:false,value:current.status===status?current:null};
+      if(status==='confirmed' && (current.draft_issue || validateReceipt(current.fields)))
+        throw Object.assign(new Error('请先补齐或纠正账单，再确认。'),{code:'RECEIPT_DRAFT_INCOMPLETE'});
+    }
     const receipt = applyReceiptStatus(store, id, status, options.now || new Date());
     return receipt
       ? { changed: true, value: receipt }

@@ -3,6 +3,7 @@ import path from "node:path";
 import { config, projectPath } from "./config.mjs";
 import { runFile } from "./lib/process.mjs";
 import { analyzeChargingReceipt, validateReceipt } from "./receipt-recognizer.mjs";
+import {parseReceiptText} from './receipt-text.mjs';
 import { matchReceiptToChargingProcesses } from "./receipt-charging-match.mjs";
 import {
   assertCard,
@@ -48,6 +49,7 @@ import {
   opaqueId,
   registerChat,
   savePendingReceipt,
+  updateReceiptFromText,
   selectReceiptChargingMatch,
   setReceiptStatus,
   setDefaultElectricityRate,
@@ -541,7 +543,7 @@ export async function handleImage(event, dependencies = {}) {
 
   try {
     await retryFeedback(
-      () => ops.replyText(event.message_id, "已收到充电账单，正在识别。识别成功会返回确认卡片，失败也会明确告知。", `${event.message_id}:received`),
+      () => ops.replyText(event.message_id, "已收到充电账单，正在识别。会返回草稿，没识别全也可以用文字补充，确认后才入账。", `${event.message_id}:received`),
       feedbackAttempts
     );
   } catch (error) {
@@ -552,19 +554,12 @@ export async function handleImage(event, dependencies = {}) {
     phase = "download";
     const imagePath = await ops.downloadMessageImage(event.message_id, event.content);
     phase = "recognition";
-    const fields = await ops.analyzeChargingReceipt(imagePath);
+    const fields = await ops.analyzeChargingReceipt(imagePath, {allowPartial:true});
     const validationError = ops.validateReceipt(fields);
-    if (validationError) {
-      phase = "invalid-feedback";
-      await retryFeedback(
-        () => ops.replyText(event.message_id, `识别失败：${validationError}。本次不会入账，请换一张能看清“实付金额”的充电账单截图。`, `${event.message_id}:invalid-image`),
-        feedbackAttempts
-      );
-      return { status: "invalid" };
-    }
     phase = "charging-match";
     let chargingMatch;
     try {
+      if(validationError || fields.draft_issue)throw Object.assign(new Error('draft incomplete'),{code:'DRAFT_INCOMPLETE'});
       const processes = await ops.getRecentChargingProcesses({ before: receivedAt, days: 7 });
       chargingMatch = ops.matchReceiptToChargingProcesses(fields, processes, receivedAt);
     } catch (error) {
@@ -582,6 +577,7 @@ export async function handleImage(event, dependencies = {}) {
     phase = "save";
     const receipt = await ops.savePendingReceipt({
       messageId: event.message_id,
+      chatId: event.chat_id,
       imagePath: path.relative(config.root, imagePath),
       fields,
       chargingMatch,
@@ -599,7 +595,7 @@ export async function handleImage(event, dependencies = {}) {
       ? "识别成功，但确认卡片发送失败。本次不会计入周结或月结，请重新发送这张图片。"
       : error.code === "RECEIPT_IMAGE_UNSAFE"
         ? "本次不会入账：请发送单笔已支付的充电账单详情截图，不要拼接多笔订单或发送待支付页面。"
-        : "识别失败：这次没有成功读取充电账单。本次不会入账，请重新发送能看清实付金额和充电电量的单笔账单截图。";
+        : "识别失败：这次没有成功读取充电账单。本次不会入账。可以重发图片，也可以直接说“昨天充了30度，实付24元”，生成草稿后再确认。";
     try {
       await retryFeedback(
         () => ops.replyText(event.message_id, text, `${event.message_id}:processing-failed`),
@@ -619,7 +615,7 @@ export async function handleReceiptMatchAction(event, dependencies = {}) {
   const ops = { selectReceiptChargingMatch, buildReceiptCard, sendCard, sendText, ...dependencies };
   let receipt;
   try {
-    receipt = await ops.selectReceiptChargingMatch(event.receipt_id, event.process_id);
+    receipt = await ops.selectReceiptChargingMatch(event.receipt_id, event.process_id, {chatId:event.chat_id,revision:event.revision});
   } catch {
     await retryFeedback(
       () => ops.sendText(event.chat_id, "关联失败：账单没有更新，请稍后重新点击。", `${event.event_id}:receipt-match-failed`),
@@ -694,6 +690,7 @@ export async function handleMessageEvent(event, dependencies = {}) {
     replyText,
     handleDefaultRateSubmission,
     runAction,
+    handleReceiptText,
     ...dependencies
   };
   if (event.sender_type === "bot" || event.chat_type !== "p2p") return;
@@ -720,6 +717,7 @@ export async function handleMessageEvent(event, dependencies = {}) {
   }
   const action = textActions.get(normalized);
   if (!action) {
+    if(await ops.handleReceiptText(event))return;
     await ops.replyText(event.message_id, "可用指令：菜单、行程小结、本周小结、本月小结、车辆概览、默认电价。也可以直接发送充电账单图片。", `${event.message_id}:unknown`);
     return;
   }
@@ -730,15 +728,35 @@ export async function handleMessageEvent(event, dependencies = {}) {
   });
 }
 
+export async function handleReceiptText(event,dependencies={}) {
+  const ops={updateReceiptFromText,replyText,replyCard,buildReceiptCard,...dependencies};
+  let patch;
+  try {patch=parseReceiptText(event.content,dependencies.now||new Date());}
+  catch {await ops.replyText(event.message_id,'没有修改账单：请每次只描述一笔，例如“充了30度，实付24元”。',`${event.message_id}:draft-invalid`);return true;}
+  if(!patch)return false;
+  try{
+    const receipt=await ops.updateReceiptFromText({chatId:event.chat_id,messageId:event.message_id,patch,receivedAt:dependencies.now||new Date()});
+    await retryFeedback(()=>ops.replyCard(event.message_id,ops.buildReceiptCard(receipt),`${event.message_id}:draft`));
+  }catch(error){
+    const text=error.code==='RECEIPT_DRAFT_AMBIGUOUS'?'有多张待确认账单，请先确认或忽略其他草稿，再补充。'
+      :error.code==='RECEIPT_DRAFT_MISSING'?'请先发送账单图片，或一次说明实付金额和电量，例如“昨天充了30度，花了24元”。'
+      :'草稿处理或卡片发送失败，尚未确认入账，请重新发送这条补充说明。';
+    await retryFeedback(()=>ops.replyText(event.message_id,text,`${event.message_id}:draft-failed`));
+  }
+  return true;
+}
+
 export async function handleReceiptAction(event, dependencies = {}) {
   const ops = { setReceiptStatus, sendText, ...dependencies };
   const status = event.action === "confirm_receipt" ? "confirmed" : "ignored";
   let receipt;
   try {
-    receipt = await ops.setReceiptStatus(event.receipt_id, status);
+    receipt = await ops.setReceiptStatus(event.receipt_id, status, {chatId:event.chat_id,revision:event.revision});
   } catch (error) {
     const failureText = error?.code === "DUPLICATE_CHARGING_PROCESS_RECEIPT"
       ? "未重复记账：这次车辆充电已经关联过另一张账单。"
+      : error?.code === 'RECEIPT_DRAFT_STALE' ? '账单已更新，请在最新草稿卡片上确认。'
+      : error?.code === 'RECEIPT_DRAFT_INCOMPLETE' ? '尚未入账：请用文字补齐或纠正实付金额和电量，再确认。'
       : "记账失败：账单没有写入本地账本，请稍后重新点击。";
     await retryFeedback(
       () => ops.sendText(event.chat_id, failureText, `${event.event_id}:ledger-failed`),
@@ -799,7 +817,8 @@ export async function handleCardEvent(event, dependencies = {}) {
       chat_id: event.chat_id,
       event_id: event.event_id,
       action,
-      receipt_id: value.receipt_id
+      receipt_id: value.receipt_id,
+      revision: value.revision
     });
     return;
   }
@@ -808,7 +827,8 @@ export async function handleCardEvent(event, dependencies = {}) {
       chat_id: event.chat_id,
       event_id: event.event_id,
       receipt_id: value.receipt_id,
-      process_id: value.process_id
+      process_id: value.process_id,
+      revision: value.revision
     });
   }
 }

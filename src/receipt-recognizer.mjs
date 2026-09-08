@@ -132,12 +132,20 @@ export async function analyzeChargingReceipt(filePath, options = {}) {
   const analyzeWithK3 = options.analyzeWithK3 || analyzeWithK3Default;
   const k3FallbackEnabled = options.k3FallbackEnabled ?? config.kimiFallbackEnabled;
   let visionError;
+  let partial;
   try {
     const local = parseVisionReceipt(await recognizeText(filePath));
+    partial = local;
     const validationError = validateReceipt(local);
     if (validationError) throw incompleteVisionError(validationError);
     return local;
   } catch (error) {
+    if (options.allowPartial) {
+      return { ...(partial || normalizeReceiptResult({}, "apple_vision")),
+        draft_issue: error.code === "RECEIPT_IMAGE_UNSAFE"
+          ? "图片可能包含多笔订单或尚未支付，不能可靠提取单笔账单。请用文字提供单笔已支付金额和电量。"
+          : "部分字段未能可靠识别，请补充或纠正后确认。" };
+    }
     if (error.code === "RECEIPT_IMAGE_UNSAFE") throw error;
     visionError = error;
   }
