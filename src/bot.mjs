@@ -597,7 +597,9 @@ export async function handleImage(event, dependencies = {}) {
     logReceiptFailure(event, phase, error);
     const text = phase === "success-feedback"
       ? "识别成功，但确认卡片发送失败。本次不会计入周结或月结，请重新发送这张图片。"
-      : "识别失败：这次没有成功读取充电账单。本次不会入账，请稍后重新发送图片。";
+      : error.code === "RECEIPT_IMAGE_UNSAFE"
+        ? "本次不会入账：请发送单笔已支付的充电账单详情截图，不要拼接多笔订单或发送待支付页面。"
+        : "识别失败：这次没有成功读取充电账单。本次不会入账，请重新发送能看清实付金额和充电电量的单笔账单截图。";
     try {
       await retryFeedback(
         () => ops.replyText(event.message_id, text, `${event.message_id}:processing-failed`),
