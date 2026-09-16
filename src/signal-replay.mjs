@@ -23,7 +23,7 @@ export function replayVehicleSignals(tracker, snapshot, signals, now) {
       .flatMap(d => [d.start_at, d.end_at]).filter(Boolean)
       .filter(at => instant(at) > instant(previousAt) && instant(at) <= instant(until))
       .sort((a, b) => instant(a) - instant(b));
-    for (const at of milestones) tracker.reconcile(snapshotAt(snapshot, at), at);
+    for (const at of milestones) tracker.reconcile(snapshotAt(snapshot, at), at, { historical: true });
   };
   for (const signal of [...signals].sort((a, b) => instant(a.at) - instant(b.at))) {
     if (!['locked', 'driver_front_door_open'].includes(signal.field)
@@ -35,9 +35,10 @@ export function replayVehicleSignals(tracker, snapshot, signals, now) {
     // a baseline. Never apply its edge to a different, newer journey.
     const stale = session && instant(signal.at) < instant(session.started_at);
     advance(signal.at);
-    if (!stale) tracker.reconcile(snapshotAt(snapshot, signal.at), signal.at);
+    if (!stale) tracker.reconcile(snapshotAt(snapshot, signal.at), signal.at, { historical: true });
     tracker.observeVehicleSignal(signal.field, signal.value, signal.at, {
-      retained: Boolean(signal.retained || stale)
+      retained: Boolean(signal.retained || stale),
+      databaseActive: Boolean(snapshotAt(snapshot, signal.at).active)
     });
     processed.push(signal.id);
     previousAt = signal.at;

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import { projectPath } from "./config.mjs";
 import {normalizeReceiptResult, validateReceipt} from './receipt-values.mjs';
+import { appendTripAudit, pruneTripAudit } from './trip-audit.mjs';
 
 const storePath = projectPath("data", "processed", "receipts.json");
 const runtimePath = projectPath("data", "processed", "runtime-state.json");
@@ -596,6 +597,10 @@ export async function appendTripSignal(signal) {
     if (!state.trip_signal_inbox.some(item => item.id === signal.id)) {
       state.trip_signal_inbox.push({ id: signal.id, field: signal.field, value: signal.value,
         at: signal.at, retained: Boolean(signal.retained) });
+      state.trip_signal_receipts = appendTripAudit(state.trip_signal_receipts, {
+        at: signal.at, event: 'received', field: signal.field, value: signal.value,
+        retained: Boolean(signal.retained)
+      });
     }
     return state;
   });
@@ -604,6 +609,7 @@ export async function appendTripSignal(signal) {
 export async function saveTripMonitorState(tripMonitor, { signalIds = [] } = {}) {
   await updateRuntimeState((state) => {
     state.trip_monitor = tripMonitor;
+    state.trip_signal_receipts = pruneTripAudit(state.trip_signal_receipts, new Date().toISOString());
     const consumed = new Set(signalIds);
     state.trip_signal_inbox = (state.trip_signal_inbox || []).filter(item => !consumed.has(item.id));
     return state;

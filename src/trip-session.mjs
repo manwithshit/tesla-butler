@@ -1,3 +1,5 @@
+import { appendTripAudit, pruneTripAudit } from './trip-audit.mjs';
+
 export const tripBoundaryDefaults = Object.freeze({
   finalizationDelayMs: 45_000,
   inactivityTimeoutMs: 30 * 60 * 1_000,
@@ -60,7 +62,8 @@ function normalizeState(saved) {
       driver_front_door_open: { ...emptySignal(), ...(saved.signals?.driver_front_door_open || {}) }
     },
     pending_events: normalizePendingEvents(saved.pending_events),
-    sent_keys: clone(saved.sent_keys || {})
+    sent_keys: clone(saved.sent_keys || {}),
+    audit: pruneTripAudit(saved.audit, '1970-01-01T00:00:00Z')
   };
 }
 
@@ -94,8 +97,10 @@ function candidateMatchesParkedSession(session) {
     && openedAt >= parkedAt - tripBoundaryDefaults.boundarySignalToleranceMs;
 }
 
-function finalizeFromCandidate(session) {
+function finalizeFromCandidate(session, at) {
   if (!candidateMatchesParkedSession(session)) return false;
+  const age = timeMs(at) - timeMs(session.boundary_candidate.locked_at);
+  if (age < 0 || age > tripBoundaryDefaults.parallelLockWindowMs) return false;
   session.phase = "finalizing";
   session.finalization_reason = "locked";
   session.finalize_at = plusMs(
@@ -155,7 +160,12 @@ export class TripSessionTracker {
     this.state = normalizeState(saved);
   }
 
-  reconcile(snapshot, at = new Date().toISOString()) {
+  recordAudit(entry) {
+    this.state.audit = appendTripAudit(this.state.audit, entry);
+  }
+
+  reconcile(snapshot, at = new Date().toISOString(), { historical = false } = {}) {
+    if (!historical) this.state.audit = pruneTripAudit(this.state.audit, at);
     const completed = snapshot?.completed || [];
     if (!this.state.initialized) {
       this.state.initialized = true;
@@ -185,13 +195,14 @@ export class TripSessionTracker {
       && !this.state.session.segment_ids.includes(Number(snapshot.active.id) || 0)
       && timeMs(snapshot.active.start_at) !== timeMs(this.state.session.active_started_at)
     ) {
-      this.queueCurrentSession();
+      this.queueCurrentSession(at);
     }
     if (snapshot?.active && !this.state.session) {
       this.state.session = newSession(snapshot.active.start_at || at);
     }
     if (snapshot?.active && this.state.session?.phase === "driving") {
       this.state.session.active_started_at = snapshot.active.start_at || at;
+      if (!historical) this.state.session.missing_active_since = null;
     }
     for (const drive of completed) {
       const id = Number(drive.id) || 0;
@@ -204,7 +215,7 @@ export class TripSessionTracker {
         this.state.session.finalization_reason = drive.charging_between
           ? "charging_between"
           : "inactivity_timeout";
-        this.queueCurrentSession();
+        this.queueCurrentSession(at);
       }
       if (!this.state.session) this.state.session = newSession(drive.start_at || at, "parked");
       const wasFinalizing = this.state.session.phase === "finalizing";
@@ -212,8 +223,29 @@ export class TripSessionTracker {
       if (!wasFinalizing) this.state.session.phase = "parked";
       this.state.session.parked_at = drive.end_at || at;
       this.state.session.active_started_at = null;
+      this.state.session.missing_active_since = null;
       if (!wasFinalizing) this.state.session.last_event_at = drive.end_at || at;
       this.state.last_processed_drive_id = id;
+    }
+    // Only independent current DB observations count. Historical signal replay
+    // may call reconcile many times using a single query; it is not new proof.
+    const session = this.state.session;
+    if (!historical && !snapshot?.active && session?.active_started_at) {
+      if (!session.missing_active_since) {
+        session.missing_active_since = at;
+        this.recordAudit({ at, event: 'database', db_active: false, decision: 'absence_pending', phase: session.phase });
+      }
+      else if (timeMs(at) - timeMs(session.missing_active_since) >= tripBoundaryDefaults.pollMs) {
+        this.recordAudit({ at, event: 'database', db_active: false, decision: session.segment_ids.length ? 'parked_recovered' : 'empty_session_discarded', segment_count: session.segment_ids.length });
+        if (session.segment_ids.length === 0) this.state.session = null;
+        else {
+          session.active_started_at = null;
+          session.parked_at = session.missing_active_since;
+          session.last_event_at = session.missing_active_since;
+          session.missing_active_since = null;
+          if (session.phase !== 'finalizing') session.phase = 'parked';
+        }
+      }
     }
     if (
       !snapshot?.active
@@ -221,7 +253,10 @@ export class TripSessionTracker {
       && !this.state.session.active_started_at
       && this.state.session.phase !== "finalizing"
     ) {
-      if (!finalizeFromCandidate(this.state.session)) {
+      if (finalizeFromCandidate(this.state.session, at)) {
+        this.recordAudit({ at, event: 'boundary', decision: 'door_lock_accepted', db_active: false });
+        this.state.session.deferred_lock_at = null;
+      } else {
         const candidate = this.state.session.boundary_candidate;
         if (
           candidateIsComplete(candidate)
@@ -229,6 +264,16 @@ export class TripSessionTracker {
             < timeMs(this.state.session.parked_at) - tripBoundaryDefaults.boundarySignalToleranceMs
         ) {
           this.state.session.boundary_candidate = null;
+        }
+        const deferredAt = this.state.session.deferred_lock_at;
+        if (timeMs(deferredAt) !== null && timeMs(at) >= timeMs(deferredAt)) {
+          const age = timeMs(at) - timeMs(deferredAt);
+          let decision = 'lock_expired';
+          if (age >= 0 && age <= tripBoundaryDefaults.parallelLockWindowMs) {
+            decision = finalizeFromParallelLock(this.state.session, deferredAt) ? 'deferred_lock_accepted' : 'lock_before_stop_or_outside_window';
+          }
+          this.recordAudit({ at, event: 'boundary', decision, db_active: false });
+          this.state.session.deferred_lock_at = null;
         }
       }
     }
@@ -253,7 +298,7 @@ export class TripSessionTracker {
       && timeMs(at) - timeMs(this.state.session.parked_at) >= tripBoundaryDefaults.inactivityTimeoutMs
     ) {
       this.state.session.finalization_reason = "inactivity_timeout";
-      this.queueCurrentSession();
+      this.queueCurrentSession(at);
     }
     if (
       this.state.session?.phase === "finalizing"
@@ -263,26 +308,36 @@ export class TripSessionTracker {
       && timeMs(this.state.session.finalize_at) !== null
       && timeMs(at) >= timeMs(this.state.session.finalize_at)
     ) {
-      this.queueCurrentSession();
+      this.queueCurrentSession(at);
     }
     return this.pendingEvents();
   }
 
-  observeVehicleSignal(field, value, at, { retained = false } = {}) {
+  observeVehicleSignal(field, value, at, { retained = false, databaseActive } = {}) {
     const signal = this.state.signals[field];
     if (!signal || typeof value !== "boolean") return false;
+    const finish = (decision, changed = true) => {
+      this.recordAudit({ at, event: 'signal', field, value, retained, db_active: databaseActive,
+        phase: this.state.session?.phase || 'idle', decision });
+      return changed;
+    };
     if (!signal.initialized || retained) {
       signal.initialized = true;
       signal.value = value;
-      return true;
+      return finish('baseline_only');
     }
     const previous = signal.value;
-    if (previous === value) return false;
+    if (previous === value) return finish('unchanged', false);
     signal.value = value;
     const session = this.state.session;
-    if (!session || session.phase === "finalizing") return true;
+    if (!session || session.phase === "finalizing") return finish(session ? 'already_finalizing' : 'no_session');
+    if (field === 'locked' && value === false) {
+      session.deferred_lock_at = null;
+      if (session.boundary_candidate) session.boundary_candidate.locked_at = null;
+    }
     session.last_event_at = at;
     if (field === "driver_front_door_open" && previous === false && value === true) {
+      session.deferred_lock_at = null;
       session.boundary_candidate = {
         door_open_at: at,
         door_closed_at: null,
@@ -302,17 +357,19 @@ export class TripSessionTracker {
       && previous === false
       && value === true
     ) {
+      if (session.phase === 'driving') session.deferred_lock_at = at;
       if (session.boundary_candidate?.door_closed_at) {
         session.boundary_candidate.locked_at = at;
         if (
           session.phase !== "driving"
-          && !finalizeFromCandidate(session)
+          && !finalizeFromCandidate(session, at)
         ) finalizeFromParallelLock(session, at);
       } else {
         finalizeFromParallelLock(session, at);
       }
     }
-    return true;
+    return finish(session.phase === 'finalizing' ? 'boundary_accepted'
+      : field === 'locked' && value ? (session.phase === 'driving' ? 'deferred' : 'lock_outside_window') : 'edge_recorded');
   }
 
   observeChargingStarted(at = new Date().toISOString()) {
@@ -322,10 +379,11 @@ export class TripSessionTracker {
     session.last_event_at = at;
     session.finalization_reason = "charging_started";
     session.finalize_at = plusMs(at, tripBoundaryDefaults.finalizationDelayMs);
+    this.recordAudit({ at, event: 'boundary', decision: 'charging_accepted', reason: 'charging_started' });
     return true;
   }
 
-  queueCurrentSession() {
+  queueCurrentSession(at = new Date().toISOString()) {
     const segmentIds = this.state.session?.segment_ids || [];
     if (segmentIds.length === 0) return false;
     const eventKey = `trip-${segmentIds.join("-")}`;
@@ -337,6 +395,8 @@ export class TripSessionTracker {
         segment_ids: [...segmentIds],
         reason: this.state.session.finalization_reason
       };
+      this.recordAudit({ at, event: 'boundary', decision: 'queued',
+        reason: this.state.session.finalization_reason, segment_count: segmentIds.length });
     }
     this.state.session = null;
     return true;
@@ -347,6 +407,7 @@ export class TripSessionTracker {
     if (!eventKey || !this.state.pending_events[eventKey]) return false;
     delete this.state.pending_events[eventKey];
     this.state.sent_keys[eventKey] = at;
+    this.recordAudit({ at, event: 'delivery', decision: 'acknowledged', segment_count: event.segment_ids?.length || 0 });
     return true;
   }
 

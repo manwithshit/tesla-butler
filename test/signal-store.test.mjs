@@ -25,6 +25,24 @@ test('signal inbox and tracker commit atomically without removing concurrently a
   } finally { await fs.rm(root, {recursive:true,force:true}); }
 });
 
+test('received signal evidence survives inbox consumption and never copies private source fields', async () => {
+  const root = await fs.mkdtemp(path.join(path.resolve('data/processed'), 'trip-receipt-audit-test-'));
+  try {
+    const script = `import {appendTripSignal,saveTripMonitorState,getRuntimeState} from './src/store.mjs';
+      const event={id:'fixture',field:'locked',value:true,at:new Date().toISOString(),retained:false,car_id:'PRIVATE',lat:0,token:'PRIVATE'};
+      await appendTripSignal(event); await appendTripSignal(event);
+      await saveTripMonitorState({initialized:true},{signalIds:['fixture']});
+      const state=await getRuntimeState(); console.log(JSON.stringify({inbox:state.trip_signal_inbox,receipts:state.trip_signal_receipts}));`;
+    const child = spawnSync(process.execPath, ['--input-type=module','-e',script], {encoding:'utf8',env:{...process.env,TICKET_PROJECT_ROOT:root}});
+    assert.equal(child.status,0);
+    const result=JSON.parse(child.stdout);
+    assert.equal(result.inbox.length,0); assert.equal(result.receipts.length,1);
+    assert.equal(result.receipts[0].event,'received'); assert.equal(result.receipts[0].value,true);
+    assert.doesNotMatch(child.stdout,/PRIVATE|car_id|lat|token/);
+    assert.equal((await fs.stat(path.join(root,'data/processed/runtime-state.json'))).mode & 0o777,0o600);
+  } finally { await fs.rm(root,{recursive:true,force:true}); }
+});
+
 test('map repair tasks persist privately across restarts and do not overwrite concurrent state', async () => {
   const base = path.resolve('data/processed');
   await fs.mkdir(base, { recursive: true });
