@@ -167,8 +167,8 @@ npx @larksuite/cli@latest install
 ### 2. 获取代码
 
 ```bash
-git clone https://github.com/manwithshit/tesla-saving-ticket.git
-cd tesla-saving-ticket
+git clone https://github.com/manwithshit/tesla-butler.git
+cd tesla-butler
 npm ci
 ```
 
@@ -203,7 +203,7 @@ npm run worker
 <details>
 <summary>已有部署升级与自定义 CLI 路径</summary>
 
-项目展示名称统一为“特斯拉小管家”，仓库恢复原名 `tesla-saving-ticket`。为兼容已有数据，Docker Compose 项目名、LaunchAgent 标签、默认飞书 Profile 仍沿用 `tesla-saving-ticket`；不要为了改名新建数据卷或搬动正在运行的工作目录。`package.json` 的 `private: true` 用于避免误发 npm 包，不表示 GitHub 仓库私有。
+项目展示名称统一为“特斯拉小管家”，仓库名为 `tesla-butler`。为兼容已有数据，Docker Compose 项目名、LaunchAgent 标签、默认飞书 Profile 仍沿用 `tesla-saving-ticket`；不要为了改名新建数据卷或搬动正在运行的工作目录。`package.json` 的 `private: true` 用于避免误发 npm 包，不表示 GitHub 仓库私有。
 
 程序优先使用显式的 `LARK_CLI` / `DOCKER_CLI` / `NODE_CLI`，其次查找 PATH；lark-cli 和 Docker 还会探测用户安装目录、Apple Silicon 与 Intel 的常见路径。Node 默认复用启动 Worker 的 Node 可执行文件。定制安装可通过上述环境变量覆盖。
 
