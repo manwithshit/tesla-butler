@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="特斯拉小玩家：把本机 TeslaMate 数据变成飞书里的行程小结、充电提醒和人民币账单">
+  <img src="./assets/readme/hero.svg" width="100%" alt="特斯拉小管家：把本机 TeslaMate 数据变成飞书里的行程小结、充电提醒和人民币账单">
 </p>
 
 <p align="center">
@@ -49,7 +49,7 @@
   </tr>
 </table>
 
-> 截图记录于持续迭代阶段。当前菜单已新增等宽的“设置默认电价”入口；月报也会显示统计周期、TeslaMate 驾驶记录数、真实计价依据，并按累计里程选择主跑路线。截图中的旧名称和主机标签来自早期版本；当前项目统一名为“特斯拉小玩家”。
+> 截图记录于持续迭代阶段。当前菜单已新增等宽的“设置默认电价”入口；月报也会显示统计周期、TeslaMate 驾驶记录数、真实计价依据，并按累计里程选择主跑路线。截图中的旧名称和主机标签来自早期版本；当前项目统一名为“特斯拉小管家”。
 
 ## 它能做什么
 
@@ -167,8 +167,8 @@ npx @larksuite/cli@latest install
 ### 2. 获取代码
 
 ```bash
-git clone https://github.com/manwithshit/tesla-player.git
-cd tesla-player
+git clone https://github.com/manwithshit/tesla-saving-ticket.git
+cd tesla-saving-ticket
 npm ci
 ```
 
@@ -196,14 +196,14 @@ docker compose --env-file infra/teslamate/.env \
 npm run worker
 ```
 
-在飞书打开自己的“特斯拉小玩家”机器人，发送 **菜单**，确认有卡片回复，再点击“车辆概览”。Worker 会维护消息和按钮两类长连接，无需公网服务器或回调域名。同一机器人只运行一套 Worker。
+在飞书打开自己的“特斯拉小管家”机器人，发送 **菜单**，确认有卡片回复，再点击“车辆概览”。Worker 会维护消息和按钮两类长连接，无需公网服务器或回调域名。同一机器人只运行一套 Worker。
 
 首次没有行程属正常情况：TeslaMate 不会补录安装前的历史轨迹。先设置默认电价，保持采集服务与 Worker 在线，再用之后的新行程验证自动推送。
 
 <details>
 <summary>已有部署升级与自定义 CLI 路径</summary>
 
-项目展示名称和仓库名已更新。为兼容已有数据，Docker Compose 项目名、LaunchAgent 标签、默认飞书 Profile 仍沿用 `tesla-saving-ticket`；不要为了改名新建数据卷或搬动正在运行的工作目录。`package.json` 的 `private: true` 用于避免误发 npm 包，不表示 GitHub 仓库私有。
+项目展示名称统一为“特斯拉小管家”，仓库恢复原名 `tesla-saving-ticket`。为兼容已有数据，Docker Compose 项目名、LaunchAgent 标签、默认飞书 Profile 仍沿用 `tesla-saving-ticket`；不要为了改名新建数据卷或搬动正在运行的工作目录。`package.json` 的 `private: true` 用于避免误发 npm 包，不表示 GitHub 仓库私有。
 
 程序优先使用显式的 `LARK_CLI` / `DOCKER_CLI` / `NODE_CLI`，其次查找 PATH；lark-cli 和 Docker 还会探测用户安装目录、Apple Silicon 与 Intel 的常见路径。Node 默认复用启动 Worker 的 Node 可执行文件。定制安装可通过上述环境变量覆盖。
 

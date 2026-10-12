@@ -12,7 +12,7 @@
 npx @larksuite/cli@latest install
 ```
 
-进入 [飞书开发者后台](https://open.feishu.cn/app)，创建自建应用，名称可填 **特斯拉小玩家**，启用机器人能力。应用可用范围仅选择你自己；企业租户可能需要管理员审核。
+进入 [飞书开发者后台](https://open.feishu.cn/app)，创建自建应用，名称可填 **特斯拉小管家**，启用机器人能力。应用可用范围仅选择你自己；企业租户可能需要管理员审核。
 
 当前代码面向单车主：未设置固定车主的会话白名单，新的单聊可能更新主动推送的接收会话。请勿把同一套车辆数据的机器人开放给其他人。
 
@@ -24,7 +24,7 @@ lark-cli config init --name tesla-saving-ticket
 
 按交互提示选择上一步的应用，将凭证保存在本机 CLI 凭证存储。不要将 App Secret 放进命令参数、项目文件、截图或 Git。
 
-`tesla-saving-ticket` 是保留的内部 Profile 名，与 Worker 默认配置一致。项目名称为“特斯拉小玩家”，两者不影响使用。若使用其他 Profile，启动 Worker 时须同步设置 `LARK_PROFILE`。
+`tesla-saving-ticket` 是保留的内部 Profile 名，与 Worker 默认配置一致。项目名称为“特斯拉小管家”，两者不影响使用。若使用其他 Profile，启动 Worker 时须同步设置 `LARK_PROFILE`。
 
 本项目用应用身份（`--as bot`）工作，不需要为了机器人收发而申请个人文档、日历或通讯录授权。
 

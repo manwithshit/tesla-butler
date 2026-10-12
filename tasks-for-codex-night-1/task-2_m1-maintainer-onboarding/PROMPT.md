@@ -34,7 +34,7 @@ status: pending
 
 ## 背景
 
-GitHub 私有仓库：`https://github.com/manwithshit/tesla-player`。
+GitHub 私有仓库：`https://github.com/manwithshit/tesla-saving-ticket`。
 
 M1 工作目录：`$PROJECT_ROOT`。
 
