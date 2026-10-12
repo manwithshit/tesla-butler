@@ -8,6 +8,8 @@ scope:
 status: pending
 ---
 
+> 路径说明：下文 `$PROJECT_ROOT` 指你自己的项目工作目录；先在该目录执行 `export PROJECT_ROOT="$(pwd)"`。
+
 # M1 长期维护接手验收
 
 ## 目标
@@ -32,9 +34,9 @@ status: pending
 
 ## 背景
 
-GitHub 私有仓库：`https://github.com/manwithshit/tesla-saving-ticket`。
+GitHub 私有仓库：`https://github.com/manwithshit/tesla-player`。
 
-M1 工作目录：`/Users/earonwong/Developer/tesla-saving-ticket`。
+M1 工作目录：`$PROJECT_ROOT`。
 
 项目来自小红书创作方向：Tesla App 虽然提供燃油费节省总数，但用户更容易理解“同样里程换成轩逸、宝马5系、路虎卫士、保时捷911或兰博基尼超跑要花多少钱”。项目把真实 TeslaMate 行程、行程功率积分耗电、用户确认的充电账单和统一油价口径组合成可核验、可分享的飞书卡片。
 
@@ -59,7 +61,7 @@ M1 工作目录：`/Users/earonwong/Developer/tesla-saving-ticket`。
 ## 验证方式
 
 ```bash
-cd /Users/earonwong/Developer/tesla-saving-ticket
+cd "$PROJECT_ROOT"
 git pull --ff-only
 git status --short --branch
 npm ci

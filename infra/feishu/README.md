@@ -1,54 +1,68 @@
-# 飞书机器人配置
+# 连接你自己的飞书机器人
 
-## 已发布状态
+**Docker 负责采集，Mac Worker 负责计算，飞书机器人负责收发。三部分连接好，才能收到行程卡和周报。**
 
-- 应用名称：特斯拉小管家
-- 应用版本：1.0.1
-- `lark-cli` Profile：`tesla-saving-ticket`
-- 运行身份：bot-only
-- 事件与回调：都使用长连接，不需要公网回调 URL
+这里配置的是支持单聊和交互卡片的自建应用机器人，不是群聊 Webhook。每位部署者创建自己的应用，不使用作者的 App ID、Secret 或会话。
 
-App Secret 和各类 Token 由本机 `lark-cli` 凭证存储管理，不进入本项目、Git 或日志。
+## 1. 安装 CLI，创建应用
 
-## 最小权限
+按 [飞书官方 CLI 安装说明](https://github.com/larksuite/cli/blob/main/README.zh.md) 安装：
+
+```bash
+npx @larksuite/cli@latest install
+```
+
+进入 [飞书开发者后台](https://open.feishu.cn/app)，创建自建应用，名称可填 **特斯拉小玩家**，启用机器人能力。应用可用范围仅选择你自己；企业租户可能需要管理员审核。
+
+当前代码面向单车主：未设置固定车主的会话白名单，新的单聊可能更新主动推送的接收会话。请勿把同一套车辆数据的机器人开放给其他人。
+
+## 2. 在本机绑定应用
+
+```bash
+lark-cli config init --name tesla-saving-ticket
+```
+
+按交互提示选择上一步的应用，将凭证保存在本机 CLI 凭证存储。不要将 App Secret 放进命令参数、项目文件、截图或 Git。
+
+`tesla-saving-ticket` 是保留的内部 Profile 名，与 Worker 默认配置一致。项目名称为“特斯拉小玩家”，两者不影响使用。若使用其他 Profile，启动 Worker 时须同步设置 `LARK_PROFILE`。
+
+本项目用应用身份（`--as bot`）工作，不需要为了机器人收发而申请个人文档、日历或通讯录授权。
+
+## 3. 开通权限和长连接
+
+在应用后台为机器人配置以下权限：
 
 | Scope | 用途 |
-|---|---|
-| `im:message.p2p_msg:readonly` | 接收用户发给机器人的单聊消息 |
-| `im:message:readonly` | 读取消息资源，下载充电账单截图，获取回调卡片内容 |
-| `im:message:send_as_bot` | 发送行程小票、确认卡片和周报/月报 |
-| `im:resource` | 上传或发送卡片所需图片/文件资源 |
+| :--- | :--- |
+| `im:message.p2p_msg:readonly` | 接收发给机器人的单聊消息 |
+| `im:message:readonly` | 读取消息与账单图片资源 |
+| `im:message:send_as_bot` | 发送行程、账单和交互卡片 |
+| `im:resource` | 上传卡片图片及文件 |
 
-不使用用户身份、通讯录、文档、日历、群聊全量消息、车辆控制或外部群权限。
+在“事件与回调”中选择 **长连接**，添加：
 
-## 事件与回调
+| 类型 | 订阅项 |
+| :--- | :--- |
+| 接收消息事件 | `im.message.receive_v1` |
+| 卡片回传交互回调 | `card.action.trigger` |
 
-- 事件：`im.message.receive_v1`
-- Card 2.0 回调：`card.action.trigger`
-- 旧版回调 `card.action.trigger_v1` 未启用
+无需公网 IP、域名或内网穿透。配置过程中若后台提示尚未检测到连接，在项目目录执行 `npm run worker`，等待两个订阅就绪，再回后台保存。不要为测试再启动第二套 Worker。
 
-运行时必须用显式 Profile，避免误用本机的通用飞书应用：
+## 4. 发布并确认生效
+
+在版本管理中创建版本并发布，让机器人能力、权限、订阅和可用范围生效；如租户要求审核，等待管理员批准。个人应用若显示免审或已生效，以后台实际状态为准。只保存配置，不代表已生效。
+
+官方说明：[启用机器人能力](https://open.feishu.cn/document/uAjLw4CM/ugTN1YjL4UTN24CO1UjN/trouble-shooting/how-to-enable-bot-ability)。
+
+## 5. 启动并验证收发
+
+若 Worker 尚未运行，在项目目录启动：
 
 ```bash
-lark-cli --profile tesla-saving-ticket event consume im.message.receive_v1 --as bot
-lark-cli --profile tesla-saving-ticket event consume card.action.trigger --as bot
+npm run worker
 ```
 
-两个 consumer 共用同一个飞书 WebSocket bus。生产运行时不要用 `kill -9`；关闭时向进程发送 `SIGTERM`。
-
-## 本机验证
-
-```bash
-lark-cli --profile tesla-saving-ticket whoami
-
-lark-cli --profile tesla-saving-ticket event consume \
-  im.message.receive_v1 --as bot --timeout 5s >/dev/null
-
-lark-cli --profile tesla-saving-ticket event consume \
-  card.action.trigger --as bot --timeout 5s >/dev/null
-```
-
-有效启动证据：
+Worker 管理消息与卡片回调两类 consumer，共用飞书 WebSocket bus。就绪时可看到：
 
 ```text
 [event] ready event_key=im.message.receive_v1
@@ -56,50 +70,31 @@ lark-cli --profile tesla-saving-ticket event consume \
 [event] ready event_key=card.action.trigger
 ```
 
-严格的四项权限不包含飞书开发者后台自检所用的 `application:*` / `admin:*` Scope，因此 `lark-cli` 可能提示 `skipped console precheck`。只要后续出现 `ready` 与 `feishu-websocket: connected`，实际长连接即已建立。
+然后在飞书打开自己的机器人单聊：
 
-## 下一步端到端验证
+1. 发送 **菜单**，确认收到功能卡片。
+2. 点击 **车辆概览**，确认按钮有回复；新部署没有数据不等于连接失败。
+3. 设置 **默认电价**。有充电账单时，可发脱敏截图并确认识别结果。
+4. 之后保持采集与 Worker 在线，用一次新行程验证主动推送。首次单聊后，周报和月报才有接收会话。
 
-1. 在飞书中打开“特斯拉小管家”单聊。
-2. 发送一张打码的测试图片。
-3. 消费 `im.message.receive_v1`，用 `message_id + image_key` 下载资源。
-4. 回复一张带“确认”按钮的 Card 2.0 测试卡。
-5. 点击按钮，确认收到 `card.action.trigger`。
+> CLI 的 `skipped console precheck` 不一定是连接失败：本项目的最小权限不包含后台自检所用的应用管理权限。以实际长连接就绪和飞书收发结果为准。
 
-这一步会真实接收用户图片并向飞书发送消息，应使用专门的打码测试素材，不要使用 Tesla Token、VIN 或精确位置截图。
+## 排查常见问题
 
-## M5 常驻 Worker
+| 现象 | 优先核对 |
+| :--- | :--- |
+| Docker 正常，飞书没消息 | Worker 是否启动；Profile 是否绑定到自己的应用 |
+| 找不到机器人或不能发消息 | 机器人能力、可用范围及版本是否生效 |
+| 消息有回复，按钮没反应 | `card.action.trigger` 是否配置；是否有另一套同应用连接 |
+| 有菜单，但行程为空 | TeslaMate 授权后是否实际采集过新行程 |
+| 账单识别不完整 | Mac 本地 OCR 和图片清晰度；按提示补充后确认，草稿不会入账 |
 
-- LaunchAgent：`com.tesla-saving-ticket.worker`
-- 入口：`src/worker.mjs`
-- OCR：Apple Vision 为默认本地识别链路。只有环境中明确配置 `KIMI_BASE_URL` 时，才把对应 K3 服务作为未知版式兜底；项目不保存 API Key。
-- 保活：LaunchAgent 用 `caffeinate -ims` 包裹 Worker，避免 M5 因系统睡眠中断采集，同时允许显示器正常熄屏。
-- 数据：TeslaMate PostgreSQL 只读；截图保存在 `data/raw/feishu/`，确认后的结构化账单保存在 `data/processed/receipts.json`，均不提交。
-- 充电提醒：MQTT 负责实时事件，PostgreSQL 每 60 秒补偿检查最新充电会话；两者共用幂等状态。飞书失败时保留待发送事件，Worker 重启后继续尝试。
-- 行程提醒：PostgreSQL 每 60 秒检查完整行程，结束后等待 5 分钟；短停且位置连续的 TeslaMate 片段合并后自动发送一张行程卡。菜单中的“上次行程”使用相同合并口径，但仅在用户点击时返回。
+## 本地运行与数据
 
-文字入口：
+- 入口：`src/worker.mjs`；默认 OCR：macOS Apple Vision。当前机器人允许不完整识别形成草稿，由用户补充确认。
+- 原始账单图片：`data/raw/feishu/`；本地账本：`data/processed/receipts.json`，均不提交 Git。图片通过飞书收发，“本地 OCR”不等于图片没有经过飞书平台。
+- PostgreSQL 是行程与充电的事实来源；MQTT 提供状态变化信号。行程结束规则见[主 README](../../README.md#行程何时算结束)。
+- 默认每周一 09:00 推送上周账单、每月 1 日 09:10 推送上月账单（Asia/Shanghai）；同一周期只发送一次。
+- 已有常驻服务的 LaunchAgent 标签仍为 `com.tesla-saving-ticket.worker`。使用 `SIGTERM` 正常停止进程，勿同时运行手动 Worker 和常驻 Worker。
 
-- `菜单` / `帮助`：Card 2.0 功能菜单。
-- `上次行程` / `最近一程` / `最近`：最近完整行程。
-- `本周` / `本周账单`：本周汇总。
-- `本月` / `本月账单` / `省了多少`：本月汇总。
-- `车辆概览` / `概览`：最新电量、续航、里程、车辆状态，以及本月行程次数/里程/时长。
-- 图片或只含图片的 `post` 富文本：无需菜单前置操作，先回复“已收到”；Apple Vision 在本机提取可见费用字段，由代码换算并校验电量。关键字段缺失且已配置 K3 时才进入增强识别，之后返回“确认记账 / 忽略”卡片。最终成功或失败都会明确回复。
-- 定时推送：与机器人完成首次单聊后，默认每周一 09:00 推上周账单、每月 1 日 09:10 推上月账单；相同周期只发送一次。
-
-维护命令：
-
-```bash
-launchctl print gui/$(id -u)/com.tesla-saving-ticket.worker
-launchctl kickstart -k gui/$(id -u)/com.tesla-saving-ticket.worker
-tail -f data/processed/logs/worker.log
-node src/cli.mjs push-preview
-npm test
-npm run test:live
-npm run test:charging-live
-npm run test:trip-live
-npm run migrate:receipts
-```
-
-Card 2.0 回调去重必须使用每次点击独立的 `event_id`，不能使用同一张卡的 `message_id`；否则第一个按钮响应后，后续按钮会被错判为重复事件。
+返回 [部署总览](../../README.md#本地安装与首次运行)。

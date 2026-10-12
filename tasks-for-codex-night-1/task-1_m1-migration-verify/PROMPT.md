@@ -1,5 +1,5 @@
 ---
-task: 在 M1 上完成特斯拉省钱小票的预迁移与验收
+task: 在 M1 上完成特斯拉小玩家的预迁移与验收
 executor: codex
 status: pending
 scope:

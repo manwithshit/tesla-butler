@@ -1,3 +1,5 @@
+> 路径说明：下文 `$PROJECT_ROOT` 指你自己的项目工作目录；先在该目录执行 `export PROJECT_ROOT="$(pwd)"`。
+
 # Trip Session Lock Boundary Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -472,7 +474,7 @@ git commit -m "test: add live-safe trip session verification"
 ### Task 7: Integrate, deploy, observe, and push from M1
 
 **Files:**
-- Merge the verified branch into `/Users/earonwong/Developer/tesla-saving-ticket` main.
+- Merge the verified branch into `$PROJECT_ROOT` main.
 - Do not modify runtime data except through the deployed Worker's normal state persistence.
 
 - [ ] **Step 1: Finish the development branch**
@@ -482,9 +484,9 @@ Use `finishing-a-development-branch`: rerun `npm test`, verify named linked work
 - [ ] **Step 2: Revalidate main and merge safely**
 
 ```bash
-git -C /Users/earonwong/Developer/tesla-saving-ticket status --short
-git -C /Users/earonwong/Developer/tesla-saving-ticket fetch origin main
-git -C /Users/earonwong/Developer/tesla-saving-ticket merge --ff-only codex/trip-lock-boundary
+git -C "$PROJECT_ROOT" status --short
+git -C "$PROJECT_ROOT" fetch origin main
+git -C "$PROJECT_ROOT" merge --ff-only codex/trip-lock-boundary
 ```
 
 Stop if main is dirty, origin diverged, or fast-forward is impossible.
@@ -504,9 +506,9 @@ Verify four Docker services, database health, one Worker, two Feishu consumers, 
 - [ ] **Step 6: Push only after deployment passes**
 
 ```bash
-git -C /Users/earonwong/Developer/tesla-saving-ticket push origin main
-git -C /Users/earonwong/Developer/tesla-saving-ticket fetch origin main
-test "$(git -C /Users/earonwong/Developer/tesla-saving-ticket rev-parse HEAD)" = "$(git -C /Users/earonwong/Developer/tesla-saving-ticket rev-parse origin/main)"
+git -C "$PROJECT_ROOT" push origin main
+git -C "$PROJECT_ROOT" fetch origin main
+test "$(git -C "$PROJECT_ROOT" rev-parse HEAD)" = "$(git -C "$PROJECT_ROOT" rev-parse origin/main)"
 ```
 
 If push fails, preserve the tested local commit and report that origin was not updated.

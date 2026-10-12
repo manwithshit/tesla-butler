@@ -1,12 +1,14 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="特斯拉省钱小票：把本机 TeslaMate 数据变成飞书里的行程小结、充电提醒和人民币账单">
+  <img src="./assets/readme/hero.svg" width="100%" alt="特斯拉小玩家：把本机 TeslaMate 数据变成飞书里的行程小结、充电提醒和人民币账单">
 </p>
 
 <p align="center">
   面向个人 Tesla 车主的本地自托管工具。原始车辆数据留在自己的电脑上，结果通过飞书主动到达。
 </p>
 
-> 当前运行边界：生产采集与飞书 Worker 已迁移到 M1。M5 只保留为维护环境，TeslaMate、PostgreSQL、Mosquitto、Grafana 和 Worker 均应保持停止。
+<p align="center">
+  <a href="#本地安装与首次运行">开始部署</a> · <a href="infra/feishu/README.md">连接飞书</a> · <a href="#它怎么工作">工作原理</a>
+</p>
 
 ## 真实手机截图
 
@@ -47,7 +49,7 @@
   </tr>
 </table>
 
-> 截图记录于持续迭代阶段。当前菜单已新增等宽的“设置默认电价”入口；月报也会显示统计周期、TeslaMate 驾驶记录数、真实计价依据，并按累计里程选择主跑路线。截图中的旧运行主机标签不代表当前生产边界。
+> 截图记录于持续迭代阶段。当前菜单已新增等宽的“设置默认电价”入口；月报也会显示统计周期、TeslaMate 驾驶记录数、真实计价依据，并按累计里程选择主跑路线。截图中的旧名称和主机标签来自早期版本；当前项目统一名为“特斯拉小玩家”。
 
 ## 它能做什么
 
@@ -143,31 +145,34 @@ PostgreSQL 是行程、GPS 和能耗的事实来源。MQTT 只帮助更快识别
 
 ## 本地安装与首次运行
 
-> 可靠性修复包括：门锁信号先落盘、查询失败重试与反馈、后台任务防积压、账单上海时区统一、菜单查询超时降级，以及地图缓存恢复。详见 [M1 可靠性试运行记录](docs/engineering/260906_M1可靠性试运行.md) 和 [9 月 7 日发布验收](docs/engineering/2026-09-07-release-verification.md)。
+代码已公开，当前支持在 Mac 上自行部署。没有 `npx` 一键安装器；可让 AI Agent 按下列步骤协助，账号授权由你本人完成。
 
-> 行程卡底图暂不可用时，会在轨迹图片下方显示灰色小字，真实轨迹仍保留。新版本发送的降级行程卡五分钟后自动尝试恢复，最多三轮；成功只更新原卡片的地图，不重复推送、不重算费用。任务随本机状态保存，重启后继续；旧版本未保存消息引用的历史卡片不自动追溯。详见 [底图恢复设计与验收](docs/plans/2026-09-07-map-card-recovery.md)。
+**完整部署包含三部分。仅启动 Docker，不会收到飞书报告。**
 
-> 停车边界恢复：短暂驾驶记录消失后，通过两次独立查库恢复停车状态；数据库更新滞后时重新核对新落锁候选，避免因滞留的“驾驶中”状态误合并行程。保留 30 分钟兜底，并在本机限期保留脱敏门锁判断记录。详见 [9 月 16 日边界修复](docs/plans/2026-09-16-trip-boundary-recovery.md)。
-
-当前仓库是私有的 Mac 原型，尚未发布可用的 `npx` 一键安装器。仓库成员可按下面的维护路径安装；普通车主暂不应把它当作开箱即用的软件。
+| Docker：采集 | Mac：整理 | 飞书：收发 |
+| :--- | :--- | :--- |
+| TeslaMate、PostgreSQL、MQTT、Grafana | Node.js Worker、地图、Apple Vision OCR | 你自己的自建应用机器人 |
+| 记录车辆与行程 | 计算电费、生成卡片和报告 | 接收截图、响应菜单、主动推送 |
 
 ### 1. 准备环境
 
-- macOS 13 或更高版本
-- Node.js 22 或更高版本
-- Docker Desktop 或兼容的本地容器运行时
-- TeslaMate 当前支持的本机授权工具
-- 已完成最小权限配置的飞书机器人
-
-### 2. 获取代码与安装依赖
+- macOS 13+、Node.js 22+、Git、Docker Desktop 或兼容容器运行时。
+- Google Chrome（生成地图图片）、Xcode Command Line Tools（编译本地 OCR；未安装时执行 `xcode-select --install`）。
+- 飞书账号及创建自建应用的权限；安装 [飞书官方 CLI](https://github.com/larksuite/cli/blob/main/README.zh.md)：
 
 ```bash
-gh repo clone manwithshit/tesla-saving-ticket
-cd tesla-saving-ticket
+npx @larksuite/cli@latest install
+```
+
+### 2. 获取代码
+
+```bash
+git clone https://github.com/manwithshit/tesla-player.git
+cd tesla-player
 npm ci
 ```
 
-### 3. 初始化并启动 TeslaMate 本地栈
+### 3. 启动 Docker 采集服务并授权车辆
 
 ```bash
 ./scripts/init-teslamate-env.sh
@@ -175,17 +180,36 @@ docker compose --env-file infra/teslamate/.env \
   -f infra/teslamate/compose.yaml up -d
 ```
 
-只在 Tesla 官方登录页或本机授权工具中完成授权。不要把账号、MFA 或 Token 粘贴到聊天、Issue、Markdown 或命令日志中。完整说明见 [TeslaMate 本地运行栈](infra/teslamate/README.md)。
+按 [TeslaMate 本地运行栈](infra/teslamate/README.md) 完成车辆授权。账号、MFA 和 Token 仅在 Tesla 官方页面或本机授权工具中处理，不粘贴到聊天、Issue 或日志。
 
-### 4. 配置飞书并启动 Worker
+### 4. 连接你自己的飞书机器人
 
-按 [飞书机器人配置](infra/feishu/README.md) 完成最小权限、事件与卡片回调配置，并确认同一套账号只有一个 Worker 在运行：
+按 [飞书连接教程](infra/feishu/README.md) 完成这条流程：
+
+**创建自建应用并启用机器人 → 可用范围仅限自己 → 开通消息与图片权限 → 配置长连接事件和卡片回调 → 发布生效 → 本机绑定应用。**
+
+这不是群聊 Webhook 机器人；每位部署者使用自己的应用凭证。凭证由本机 `lark-cli` 管理，不写进项目。后台如要求先建立长连接，再保存订阅，按教程先启动 Worker 后完成配置。
+
+### 5. 启动本地助手，验证首次收发
 
 ```bash
 npm run worker
 ```
 
-首次打开菜单且尚未设置默认电价时，机器人会额外发送一次默认电价输入卡；以后可以随时从菜单重新进入并修改。首次授权后界面可能仍没有行程，这是正常的冷启动状态。只有 TeslaMate、PostgreSQL 和 Worker 在车辆行驶时持续运行且联网，之后的新数据才会累积。
+在飞书打开自己的“特斯拉小玩家”机器人，发送 **菜单**，确认有卡片回复，再点击“车辆概览”。Worker 会维护消息和按钮两类长连接，无需公网服务器或回调域名。同一机器人只运行一套 Worker。
+
+首次没有行程属正常情况：TeslaMate 不会补录安装前的历史轨迹。先设置默认电价，保持采集服务与 Worker 在线，再用之后的新行程验证自动推送。
+
+<details>
+<summary>已有部署升级与自定义 CLI 路径</summary>
+
+项目展示名称和仓库名已更新。为兼容已有数据，Docker Compose 项目名、LaunchAgent 标签、默认飞书 Profile 仍沿用 `tesla-saving-ticket`；不要为了改名新建数据卷或搬动正在运行的工作目录。`package.json` 的 `private: true` 用于避免误发 npm 包，不表示 GitHub 仓库私有。
+
+程序优先使用显式的 `LARK_CLI` / `DOCKER_CLI` / `NODE_CLI`，其次查找 PATH；lark-cli 和 Docker 还会探测用户安装目录、Apple Silicon 与 Intel 的常见路径。Node 默认复用启动 Worker 的 Node 可执行文件。定制安装可通过上述环境变量覆盖。
+
+维护记录：[可靠性试运行](docs/engineering/260906_M1可靠性试运行.md) · [地图恢复](docs/plans/2026-09-07-map-card-recovery.md) · [停车边界恢复](docs/plans/2026-09-16-trip-boundary-recovery.md)。这些是既有部署记录，不代替你自己的安装验收。
+
+</details>
 
 ## 常用命令和验证
 
@@ -213,7 +237,7 @@ docker compose --env-file infra/teslamate/.env \
 
 ## 已知限制
 
-- 当前为私有、Mac-only 原型；一键安装器、多平台支持和公开分发尚未完成。
+- 代码已公开，当前为 Mac 自托管工具；尚无一键安装器，Apple Vision 识别不能直接在普通 Linux Docker 容器中运行。
 - 行程电费来自功率采样积分与用户电价换算，是估算值；采样缺口会降低可靠性。
 - 油车费用只比较能源费，不包含购车、折旧、保险、停车和时间成本，并必须保留油耗、油价来源及口径日期。
 - Apple Vision 已验证的账单版式仍有限；未知版式可能需要可选兜底或明确失败反馈。
