@@ -2,7 +2,7 @@
      width="1200" height="420" viewBox="0 0 1200 420"
      role="img" aria-labelledby="title desc">
   <title id="title">特斯拉小管家</title>
-  <desc id="desc">把本机 TeslaMate 数据变成飞书里的行程小结、充电提醒和人民币账单。</desc>
+  <desc id="desc">把本机 TeslaMate 数据变成飞书里的行程小结、充电提醒和用车记录。</desc>
 
   <rect width="1200" height="420" rx="28" fill="#08090B"/>
   <path d="M0 354H1200" stroke="#20242A"/>
@@ -11,7 +11,7 @@
     <text x="62" y="64" fill="#949BA8" font-size="18" font-weight="600" letter-spacing="2">LOCAL TESLAMATE COMPANION</text>
     <text x="58" y="145" fill="#F4F1E8" font-size="64" font-weight="760">特斯拉小管家</text>
     <text x="62" y="201" fill="#C8CDD4" font-size="29">把本机 TeslaMate 数据，变成飞书里的</text>
-    <text x="62" y="246" fill="#F4F1E8" font-size="32" font-weight="650">行程小结 · 充电提醒 · 人民币账单</text>
+    <text x="62" y="246" fill="#F4F1E8" font-size="32" font-weight="650">行程小结 · 充电提醒 · 用车记录</text>
   </g>
 
   <g id="route-motif">

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="特斯拉小管家：把本机 TeslaMate 数据变成飞书里的行程小结、充电提醒和人民币账单">
+  <img src="./assets/readme/hero.svg" width="100%" alt="特斯拉小管家：把本机 TeslaMate 数据变成飞书里的行程小结、充电提醒和用车记录">
 </p>
 
 <p align="center">
