@@ -1,4 +1,8 @@
 <p align="center">
+  <strong>简体中文</strong> · <a href="./README.en.md">English</a>
+</p>
+
+<p align="center">
   <img src="./assets/readme/hero-driving-records.svg" width="100%" alt="特斯拉小管家：把本机 TeslaMate 数据变成飞书里的行程小结、充电提醒和用车记录">
 </p>
 
