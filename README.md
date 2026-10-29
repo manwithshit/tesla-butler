@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="#本地安装与首次运行">开始部署</a> · <a href="infra/feishu/README.md">连接飞书</a> · <a href="#它怎么工作">工作原理</a>
+  <a href="#本地安装与首次运行">开始部署</a> · <a href="infra/feishu/README.md">连接飞书</a> · <a href="#它怎么工作">工作原理</a> · <a href="LICENSE">MIT License</a>
 </p>
 
 ## 真实手机截图
@@ -261,3 +261,11 @@ docker compose --env-file infra/teslamate/.env \
 - [Tesla 数据获取与开源采集方案](docs/research/260823_开源采集方案选型.md)
 - [TeslaMate 本地运行栈](infra/teslamate/README.md)
 - [飞书机器人配置](infra/feishu/README.md)
+
+## 开源许可与贡献
+
+本项目采用 [MIT License](LICENSE)。你可以使用、修改、分发和商用本项目；分发时须保留原有版权声明和许可文本。软件按现状提供，不附带担保，具体以许可证全文为准。
+
+欢迎通过 Pull Request 贡献 NAS、Linux 等平台适配；请附上部署步骤、验证环境和已知限制。此处是贡献邀请，不代表这些平台已经适配或验证，也不要求使用者必须回馈修改。
+
+第三方依赖与组件（包括 TeslaMate）继续遵守各自的许可证。本许可不授予 Tesla、飞书等第三方品牌或商标的使用权。

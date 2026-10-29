@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="#local-installation-and-first-run">Get started</a> · <a href="infra/feishu/README.md">Connect Feishu</a> · <a href="#how-it-works">How it works</a>
+  <a href="#local-installation-and-first-run">Get started</a> · <a href="infra/feishu/README.md">Connect Feishu</a> · <a href="#how-it-works">How it works</a> · <a href="LICENSE">MIT License</a>
 </p>
 
 > This is the English documentation for Tesla Butler (特斯拉小管家). The screenshots show the original Chinese interface. Chinese bot commands are kept below with English explanations; linked setup and maintenance guides are currently in Chinese.
@@ -264,3 +264,11 @@ The following documents are in Chinese:
 - [Tesla data access and open-source collection options](docs/research/260823_开源采集方案选型.md)
 - [TeslaMate local stack](infra/teslamate/README.md)
 - [Feishu bot configuration](infra/feishu/README.md)
+
+## License and contributions
+
+This project is licensed under the [MIT License](LICENSE). You may use, modify, distribute, and use it commercially, provided that the original copyright and license notices are retained when distributing it. The software is provided as is, without warranty; the full license governs.
+
+Pull requests for NAS, Linux, and other platforms are welcome. Please include setup instructions, the environment tested, and known limitations. This invitation does not imply that those platforms are already supported or verified, and contributing changes back is not required by the license.
+
+Third-party dependencies and components, including TeslaMate, remain subject to their respective licenses. This license does not grant rights to third-party brands or trademarks such as Tesla or Feishu.
