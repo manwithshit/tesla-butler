@@ -13,6 +13,9 @@ export const config = Object.freeze({
   nodeCli: process.env.NODE_CLI || process.execPath,
   chromeCli: process.env.CHROME_CLI || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   xcrunCli: process.env.XCRUN_CLI || "/usr/bin/xcrun",
+  ocrBackend: process.env.TICKET_OCR_BACKEND || "apple-vision",
+  rapidOcrUrl: process.env.RAPIDOCR_URL || "http://127.0.0.1:9101",
+  rapidOcrTimeoutMs: Number(process.env.RAPIDOCR_TIMEOUT_MS) || 30_000,
   kimiBaseUrl: process.env.KIMI_BASE_URL || "http://127.0.0.1:10100/v1",
   kimiModel: process.env.KIMI_MODEL || "kimi/k3",
   kimiFallbackEnabled: process.env.KIMI_FALLBACK_ENABLED === undefined

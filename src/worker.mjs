@@ -251,7 +251,7 @@ async function startChargingMonitor() {
 }
 
 async function boot() {
-  log(`worker starting profile=${config.larkProfile} ocr=apple-vision k3Fallback=${config.kimiFallbackEnabled ? config.kimiModel : "off"}`);
+  log(`worker starting profile=${config.larkProfile} ocr=${config.ocrBackend} k3Fallback=${config.kimiFallbackEnabled ? config.kimiModel : "off"}`);
   await refreshReferenceFuelPrices()
     .then((reference) => log(`fuel reference ready date=${reference.display_date} current=${reference.is_current_day}`))
     .catch((error) => log(`fuel reference refresh failed: ${error.message}`));

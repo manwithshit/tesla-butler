@@ -636,7 +636,7 @@ export function buildReceiptCard(receipt) {
   const issue=receipt.draft_issue || validateReceipt(fields);
   const actionValue={receipt_id:receipt.id,...(receipt.revision ? {revision:receipt.revision}: {})};
   const confidence = fields.confidence === null ? "未知" : `${Math.round(fields.confidence * 100)}%`;
-  const confidenceLabel = fields.recognition_source === "apple_vision" ? "字段完整度" : "识别置信度";
+  const confidenceLabel = fields.recognition_source === "apple_vision" || fields.recognition_source === "rapidocr" ? "字段完整度" : "识别置信度";
   const money = (value) => value === null || value === undefined ? "暂无" : `¥${Number(value).toFixed(2)}`;
   const unitPrice = (value) => value === null || value === undefined ? "暂无" : `¥${Number(value).toFixed(2)}/kWh`;
   const serviceShare = fields.service_fee_cny !== null && fields.service_fee_cny !== undefined && Number(fields.amount_cny) > 0
@@ -649,8 +649,9 @@ export function buildReceiptCard(receipt) {
   }[fields.energy_source] || "识别结果";
   const recognitionTag = fields.recognition_source === "apple_vision"
     ? "本地识别"
-    : fields.recognition_source === "k3_fallback" ? "K3 增强识别"
-      : fields.recognition_source === "user_text" ? "用户文字补充" : "识别结果";
+    : fields.recognition_source === "rapidocr" ? "本地识别(RapidOCR)"
+      : fields.recognition_source === "k3_fallback" ? "K3 增强识别"
+        : fields.recognition_source === "user_text" ? "用户文字补充" : "识别结果";
   const match = receipt.charging_match;
   const formatCandidateTime = (value) => {
     const found = String(value || "").match(/^\d{4}-(\d{2})-(\d{2}) (\d{2}:\d{2})$/);
