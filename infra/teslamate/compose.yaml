@@ -67,6 +67,10 @@ services:
         condition: service_healthy
     security_opt:
       - no-new-privileges:true
+    # Optional dashboard: `docker compose --profile dashboards ...` to enable.
+    # Off by default so low-memory hosts (NAS) can run the stack without it.
+    profiles:
+      - dashboards
 
   mosquitto:
     image: eclipse-mosquitto:2
