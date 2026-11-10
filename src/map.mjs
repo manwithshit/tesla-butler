@@ -220,7 +220,7 @@ function mapHtml(points, fit, labels) {
     ${annotation(points[0], fit, labels.start || "起点", "start")}
     ${annotation(points.at(-1), fit, labels.end || "终点", "end")}
     <div class="legend"><div class="legend-row"><span><i class="dot low-dot"></i>低耗</span><span><i class="dot medium-dot"></i>中耗</span><span><i class="dot high-dot"></i>高耗</span></div><small>按本次行程功率分位着色</small></div>
-    <div class="attribution">© 高德地图 · 轨迹 TeslaMate</div>
+    <div class="attribution">${config.mapAttribution || "© 高德地图 · 轨迹 TeslaMate"}</div>
   </div></body></html>`;
 }
 
@@ -337,6 +337,17 @@ function encodeRgbPng(width, height, rgb) {
   ]);
 }
 
+async function isPngFile(pngPath) {
+  const handle = await fs.open(pngPath, "r");
+  try {
+    const header = Buffer.alloc(8);
+    await handle.read(header, 0, 8, 0);
+    return header.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  } finally {
+    await handle.close();
+  }
+}
+
 async function writeFallbackPng(route, pngPath) {
   const pixels = imageBuffer();
   drawFallback(pixels, route);
@@ -359,7 +370,7 @@ async function clearChromeSingletonLocks() {
 // while --virtual-time-budget is already ticking, which races tile loading
 // and can end the render before the screenshot is written. Warm the profile
 // once with a tile-fetching page so real renders start from a hot cache.
-function ensureChromeProfileWarmed() {
+function ensureChromeProfileWarmed(io) {
   if (!chromeProfileWarmPromise) {
     chromeProfileWarmPromise = (async () => {
       await fs.mkdir(CHROME_PROFILE_DIR, { recursive: true });
@@ -385,7 +396,7 @@ function ensureChromeProfileWarmed() {
         const fileExists = () => fs.stat(warmPng).then(() => true, () => false);
         for (let attempt = 1; attempt <= 3; attempt += 1) {
           await clearChromeSingletonLocks();
-          await runFile(config.chromeCli, args, { timeout: 60_000 });
+          await io.runFile(config.chromeCli, args, { timeout: 60_000 });
           if (await fileExists()) break;
           if (attempt === 3) throw new Error("chrome profile warmup did not produce a screenshot");
           await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -407,14 +418,24 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
   try {
   // A dedicated render sidecar runs its own Chrome; warming a local profile
   // would be pure overhead (and impossible if the host has no Chrome).
-  if (!config.mapRenderUrl) await ensureChromeProfileWarmed();
+  try {
+    await ensureChromeProfileWarmed(io);
+  } catch (error) {
+    // Warmup is an optimization only — rendering itself reports failures.
+    console.warn(`[${new Date().toISOString()}] chrome profile warmup skipped code=${error.code || "UNKNOWN"}`);
+  }
   const fit = fitMap(points);
   const centerTileX = Math.floor((fit.originX + WIDTH / 2) / TILE_SIZE);
   const centerTileY = Math.floor((fit.originY + HEIGHT / 2) / TILE_SIZE);
   stage = 'tile_fetch';
-  const response = await io.fetch(tileUrl(centerTileX, centerTileY, fit.zoom), { signal: AbortSignal.timeout(6_000) });
-  if (!response.ok || !String(response.headers.get("content-type")).startsWith("image/")) throw new Error("map tile unavailable");
-  await response.arrayBuffer();
+  // The tile probe runs only where rendering happens: in sidecar mode the
+  // worker may not reach the tile host at all, and the sidecar performs
+  // its own fetch (surfacing failures as render errors).
+  if (!config.mapRenderUrl) {
+    const response = await io.fetch(tileUrl(centerTileX, centerTileY, fit.zoom), { signal: AbortSignal.timeout(6_000) });
+    if (!response.ok || !String(response.headers.get("content-type")).startsWith("image/")) throw new Error("map tile unavailable");
+    await response.arrayBuffer();
+  }
   stage = 'local_file';
   const htmlPath = path.join(path.dirname(pngPath), `${safeKey}.html`);
   const chromeArgs = [
@@ -456,13 +477,17 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
         });
         if (!response.ok) throw new Error(`map render sidecar ${response.status}`);
         const png = Buffer.from(await response.arrayBuffer());
-        if (png.length < 10_000) throw new Error("sidecar rendered map image is unexpectedly small");
+        const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        if (png.length < 10_000 || !png.subarray(0, 8).equals(pngSignature)) {
+          throw new Error("sidecar response is not a valid PNG");
+        }
         await fs.writeFile(pngPath, png, { mode: 0o600 });
       } else {
-        await io.runFile(config.chromeCli, chromeArgs, { timeout: 30_000 });
+        // 60s > Chrome 内部 --timeout=45000：让兜底截图先落地再判失败
+      await io.runFile(config.chromeCli, chromeArgs, { timeout: 60_000 });
       }
       stage = 'image_check';
-      if (await fileExists()) {
+      if (await fileExists() && await isPngFile(pngPath)) {
         const stats = await fs.stat(pngPath);
         if (stats.size >= 10_000) break;
       }
@@ -485,12 +510,27 @@ async function renderMapPng(points, pngPath, safeKey, labels, io) {
   }
 }
 
-export async function renderRoutePreview(route, key = "current", labels = {}, dependencies = {}) {
+// Renders are serialized: concurrent runs would delete each other's
+// Chrome profile locks (see clearChromeSingletonLocks) and race the
+// shared warmup state.
+let renderQueue = Promise.resolve();
+
+export function renderRoutePreview(route, key = "current", labels = {}, dependencies = {}) {
+  const result = renderQueue.then(() => renderRoutePreviewInner(route, key, labels, dependencies));
+  renderQueue = result.then(() => {}, () => {});
+  return result;
+}
+
+async function renderRoutePreviewInner(route, key = "current", labels = {}, dependencies = {}) {
   const io = { fetch, runFile, ...dependencies };
   const cleanRoute = Array.isArray(route)
     ? route.filter((point) => Number.isFinite(Number(point.lat)) && Number.isFinite(Number(point.lng)))
     : [];
-  const converted = cleanRoute.map((point) => ({ ...point, ...wgs84ToGcj02(point.lat, point.lng) }));
+  // AMap tiles are GCJ-02; WGS-84 basemaps set TICKET_MAP_TILE_WGS84=1
+  // and skip the shift.
+  const converted = config.mapTileWgs84
+    ? cleanRoute.map((point) => ({ ...point, lat: Number(point.lat), lng: Number(point.lng) }))
+    : cleanRoute.map((point) => ({ ...point, ...wgs84ToGcj02(point.lat, point.lng) }));
   const dir = projectPath("data", "processed", "maps");
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const safeKey = String(key).replace(/[^a-zA-Z0-9_-]/g, "-");

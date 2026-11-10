@@ -5,6 +5,7 @@ services:
     image: teslamate/teslamate:4.1.1
     restart: unless-stopped
     environment:
+      NOMINATIM_PROXY: ${NOMINATIM_PROXY:-}
       ENCRYPTION_KEY: ${TM_ENCRYPTION_KEY}
       DATABASE_USER: teslamate
       DATABASE_PASS: ${TM_DB_PASSWORD}

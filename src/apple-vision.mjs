@@ -80,22 +80,32 @@ function rapidOcrError(message, code, cause) {
 
 // RapidOCR service returns [{text, confidence, box: [[x,y] x4]}]; the receipt
 // parser only needs axis-aligned bounds, so collapse each polygon once here.
+// Malformed entries (missing points, non-numeric or non-finite coordinates)
+// are rejected with VISION_RESPONSE_INVALID instead of producing NaN bounds.
 function flattenRapidOcrObservations(payload) {
-  return payload.map((item) => {
+  const observations = [];
+  for (const item of Array.isArray(payload) ? payload : []) {
     const box = Array.isArray(item?.box) ? item.box : [];
-    const xs = box.map((point) => Number(point[0]));
-    const ys = box.map((point) => Number(point[1]));
+    const points = box.map((point) => [Number(point?.[0]), Number(point?.[1])]);
+    if (points.length < 3 || points.some(([x, y]) => !Number.isFinite(x) || !Number.isFinite(y))) {
+      const error = new Error("RapidOCR observation has an invalid box");
+      error.code = "VISION_RESPONSE_INVALID";
+      throw error;
+    }
+    const xs = points.map(([x]) => x);
+    const ys = points.map(([, y]) => y);
     const minX = Math.min(...xs);
     const minY = Math.min(...ys);
-    return {
+    observations.push({
       text: String(item?.text ?? ""),
-      confidence: Number(item?.confidence ?? 0),
+      confidence: Number.isFinite(Number(item?.confidence)) ? Number(item?.confidence) : 0,
       x: minX,
       y: minY,
       width: Math.max(...xs) - minX,
       height: Math.max(...ys) - minY
-    };
-  });
+    });
+  }
+  return observations;
 }
 
 async function recognizeTextWithRapidOcr(imagePath, options = {}) {

@@ -57,7 +57,13 @@ if [ "$MODE" = "preflight" ]; then
     exit 1
   fi
 else
-  for service in database mosquitto grafana teslamate; do
+  # Grafana runs behind the optional "dashboards" compose profile; low-memory
+  # hosts skip it, so only the collection services are required here.
+  required="database mosquitto teslamate"
+  if compose config --profile dashboards >/dev/null 2>&1; then
+    required="$required grafana"
+  fi
+  for service in $required; do
     if ! compose ps --status running "$service" | grep -q "$service"; then
       echo "服务未运行：$service" >&2
       exit 1
