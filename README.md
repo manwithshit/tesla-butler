@@ -215,6 +215,28 @@ npm run worker
 
 </details>
 
+<details>
+<summary>Linux/NAS（无 macOS）部署开关</summary>
+
+无 Apple Vision 的主机上，账单识别可切换到 RapidOCR HTTP 服务（PaddleOCR 模型 + ONNXRuntime，纯 CPU）；地图渲染在无桌面环境的容器内可用。相关环境变量：
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `TICKET_OCR_BACKEND` | `apple-vision` | 设为 `rapidocr` 时账单识别走 RapidOCR HTTP 服务 |
+| `RAPIDOCR_URL` / `RAPIDOCR_TIMEOUT_MS` | `http://127.0.0.1:9101` / `30000` | RapidOCR 服务地址与超时 |
+| `TICKET_MAP_RENDER_URL` | 空 | 设置后地图渲染委派给该 HTTP sidecar（worker 本机可不装 Chrome） |
+| `TICKET_MAP_RENDER_TIMEOUT_MS` | `90000` | sidecar 渲染超时 |
+| `TICKET_CHROME_PROFILE_DIR` | 系统临时目录 | Chrome profile 目录；慢速磁盘建议指到 tmpfs |
+| `TICKET_MAP_TILE_URL` | 高德瓦片 | 自定义瓦片源，支持 `{x}`/`{y}`/`{z}` 占位 |
+| `TICKET_MAP_TILE_WGS84` | 关 | WGS-84 瓦片源设 `1` 跳过 GCJ-02 转换（默认按 GCJ-02 处理） |
+| `TICKET_MAP_ATTRIBUTION` | `© 高德地图 · 轨迹 TeslaMate` | 卡片上的底图署名 |
+| `TICKET_ADDR_BACKFILL_ENABLED` | 关 | 设 `1` 开启中文路名级起终点标签（opt-in，开启前不发任何请求） |
+| `AMAP_KEY` | 空 | 高德 Web 服务 key，路名标签用；对 TeslaMate 严格只读 |
+| `TICKET_TRIP_MIN_KM` | `1` | 微行程通知阈值（公里，按里程表口径） |
+| `NOMINATIM_PROXY` | 空 | 透传给 TeslaMate 的 nominatim 代理（能连通 nominatim 的主机可沿用其原生地址解析） |
+
+</details>
+
 ## 常用命令和验证
 
 ```bash

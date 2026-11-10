@@ -216,6 +216,28 @@ Maintenance records: [Reliability trial](docs/engineering/260906_M1可靠性试�
 
 </details>
 
+<details>
+<summary>Linux/NAS (non-macOS) deployment switches</summary>
+
+On hosts without Apple Vision, receipt OCR can switch to a RapidOCR HTTP service (PaddleOCR models via ONNXRuntime, CPU-only); map rendering works in headless containers. Relevant environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TICKET_OCR_BACKEND` | `apple-vision` | set to `rapidocr` to route receipt OCR to a RapidOCR HTTP service |
+| `RAPIDOCR_URL` / `RAPIDOCR_TIMEOUT_MS` | `http://127.0.0.1:9101` / `30000` | RapidOCR service URL and timeout |
+| `TICKET_MAP_RENDER_URL` | empty | delegate map rendering to this HTTP sidecar (no local Chrome needed) |
+| `TICKET_MAP_RENDER_TIMEOUT_MS` | `90000` | sidecar render timeout |
+| `TICKET_CHROME_PROFILE_DIR` | system temp | Chrome profile dir; point at tmpfs on slow disks |
+| `TICKET_MAP_TILE_URL` | AMap tiles | custom tile source with `{x}`/`{y}`/`{z}` placeholders |
+| `TICKET_MAP_TILE_WGS84` | off | set `1` to skip GCJ-02 conversion for WGS-84 tile servers |
+| `TICKET_MAP_ATTRIBUTION` | `© 高德地图 · 轨迹 TeslaMate` | basemap attribution shown on cards |
+| `TICKET_ADDR_BACKFILL_ENABLED` | off | set `1` to enable Chinese road-level endpoint labels (opt-in; no requests until enabled) |
+| `AMAP_KEY` | empty | AMap web-service key for road labels; strictly read-only towards TeslaMate |
+| `TICKET_TRIP_MIN_KM` | `1` | micro-trip notification threshold in km (odometer semantics) |
+| `NOMINATIM_PROXY` | empty | nominatim proxy passed through to TeslaMate (hosts that can reach nominatim keep its native geocoding) |
+
+</details>
+
 ## Common commands and validation
 
 ```bash
