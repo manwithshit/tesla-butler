@@ -3,8 +3,9 @@
 </p>
 
 <p align="center">
-  <img src="./assets/readme/hero-driving-records.svg" width="100%" alt="特斯拉小管家：把本机 TeslaMate 数据变成飞书里的行程小结、充电提醒和用车记录">
+  <img src="./assets/readme/hero-portfolio.webp" width="100%" alt="tesla-butler — 项目封面与功能示意">
 </p>
+<p align="center"><sub>封面为 AI 绘制的功能示意，实际界面请看下方真实截图。</sub></p>
 
 <p align="center">
   面向个人 Tesla 车主的本地自托管工具。原始车辆数据留在自己的电脑上，结果通过飞书主动到达。

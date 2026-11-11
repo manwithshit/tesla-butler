@@ -3,8 +3,9 @@
 </p>
 
 <p align="center">
-  <img src="./assets/readme/hero-driving-records-en.svg" width="100%" alt="Tesla Butler: turn local TeslaMate data into trip summaries, charging alerts, and driving records delivered through Feishu">
+  <img src="./assets/readme/hero-portfolio.webp" width="100%" alt="tesla-butler — illustrated project cover">
 </p>
+<p align="center"><sub>AI-illustrated cover; see the real screenshots below for the actual interface.</sub></p>
 
 <p align="center">
   A locally hosted tool for individual Tesla owners. Raw vehicle data stays on your own computer; results arrive proactively through Feishu.
