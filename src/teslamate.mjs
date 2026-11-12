@@ -121,6 +121,10 @@ export async function getLatestTrip() {
         'end_road', NULLIF(ea.road, ''),
         'start_area', NULLIF(sa.city, ''),
         'end_area', NULLIF(ea.city, ''),
+        'start_lat', sp.latitude::float8,
+        'start_lng', sp.longitude::float8,
+        'end_lat', ep.latitude::float8,
+        'end_lng', ep.longitude::float8,
         'estimated_kwh', CASE
           WHEN e.valid_segments > 0 THEN round(greatest(e.net_kwh, 0)::numeric, 2)
           WHEN c.efficiency IS NOT NULL
@@ -144,6 +148,8 @@ export async function getLatestTrip() {
       JOIN cars c ON c.id = d.car_id
       LEFT JOIN addresses sa ON sa.id = d.start_address_id
       LEFT JOIN addresses ea ON ea.id = d.end_address_id
+      LEFT JOIN positions sp ON sp.id = d.start_position_id
+      LEFT JOIN positions ep ON ep.id = d.end_position_id
       LEFT JOIN LATERAL (
         SELECT
           count(*) AS valid_segments,

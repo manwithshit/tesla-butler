@@ -13,6 +13,18 @@ export const config = Object.freeze({
   nodeCli: process.env.NODE_CLI || process.execPath,
   chromeCli: process.env.CHROME_CLI || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   xcrunCli: process.env.XCRUN_CLI || "/usr/bin/xcrun",
+  ocrBackend: process.env.TICKET_OCR_BACKEND || "apple-vision",
+  rapidOcrUrl: process.env.RAPIDOCR_URL || "http://127.0.0.1:9101",
+  rapidOcrTimeoutMs: Number(process.env.RAPIDOCR_TIMEOUT_MS) || 30_000,
+  amapKey: process.env.AMAP_KEY || "",
+  addressBackfillEnabled: process.env.TICKET_ADDR_BACKFILL_ENABLED === "1",
+  tripMinKm: Number(process.env.TICKET_TRIP_MIN_KM ?? 1),
+  mapRenderUrl: process.env.TICKET_MAP_RENDER_URL || "",
+  mapRenderTimeoutMs: Number(process.env.TICKET_MAP_RENDER_TIMEOUT_MS) || 90_000,
+  mapTileUrl: process.env.TICKET_MAP_TILE_URL
+    || "https://wprd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}",
+  mapTileWgs84: process.env.TICKET_MAP_TILE_WGS84 === "1",
+  mapAttribution: process.env.TICKET_MAP_ATTRIBUTION || "© 高德地图 · 轨迹 TeslaMate",
   kimiBaseUrl: process.env.KIMI_BASE_URL || "http://127.0.0.1:10100/v1",
   kimiModel: process.env.KIMI_MODEL || "kimi/k3",
   kimiFallbackEnabled: process.env.KIMI_FALLBACK_ENABLED === undefined

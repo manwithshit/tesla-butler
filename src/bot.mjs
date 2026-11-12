@@ -37,6 +37,7 @@ import {
   getTripInsightHistory,
   getVehicleOverview
 } from "./teslamate.mjs";
+import { applyAddressLabels } from "./amap-addr.mjs";
 import {
   getReceiptTotals,
   getDefaultRatePromptedAt,
@@ -227,11 +228,15 @@ async function makePeriodCard(period) {
     if (mainRoute) {
       try {
         const route = await getDriveRoute(mainRoute.representative_drive_id);
-        const cacheKey = `period-v2-${opaqueId(JSON.stringify({
+        const cacheKey = `period-v3-${opaqueId(JSON.stringify({
           period,
           drive: mainRoute.representative_drive_id,
           count: mainRoute.trip_count,
-          distance: mainRoute.distance_km
+          distance: mainRoute.distance_km,
+          labels: {
+            start: mainRoute.representative_start_road,
+            end: mainRoute.representative_end_road
+          }
         }))}`;
         const image = await resolveRouteImage({
           cacheKey,
@@ -275,6 +280,7 @@ async function makeDefaultElectricityPriceCard() {
 
 async function makeLatestTripCard() {
   const trip = await getLatestTripGroup();
+  await applyAddressLabels(trip);
   return makeTripGroupCard(trip);
 }
 
@@ -311,9 +317,10 @@ async function makeTripGroupCard(trip) {
     trip.pricing_summary = pricingSummary;
   }
   if (!trip) return buildLatestTripCard(null);
-  const cacheKey = `trip-v2-${opaqueId(JSON.stringify({
+  const cacheKey = `trip-v3-${opaqueId(JSON.stringify({
     segments: trip.segment_ids || [trip.id],
-    endAt: trip.end_at || null
+    endAt: trip.end_at || null,
+    labels: { start: trip?.start_road, end: trip?.end_road }
   }))}`;
   const image = await resolveRouteImage({
     cacheKey,

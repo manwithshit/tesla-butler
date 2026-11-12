@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createEventProcessor, createSerialQueue, safeErrorCode } from './worker-runtime.mjs';
 import { connect } from "mqtt";
 import { handleCardEvent, handleMessageEvent, retryPendingMapCards, sendChargingEvent, sendCompletedTrip, sendScheduledReport } from "./bot.mjs";
+import { applyAddressLabels } from "./amap-addr.mjs";
 import { ChargingTracker, parseTeslaMateTopic } from "./charging.mjs";
 import { createChargingDatabaseMonitor, deliverPendingChargingEvents } from "./charging-monitor.mjs";
 import { consumeLines } from "./lib/lines.mjs";
@@ -162,8 +163,32 @@ async function startTripMonitor() {
     getRuntimeState,
     saveState: saveTripMonitorState,
     sendTrip: async (chatId, event, key) => {
-      await sendCompletedTrip(chatId, event, key);
-      log(`trip notification sent segments=${event.trip.segment_ids.length}`);
+      const segmentIds = event.trip?.segment_ids ?? event.segment_ids;
+      let trip = event.trip;
+      try {
+        // Micro-trips (e.g. re-parking after fetching something) stay in
+        // TeslaMate but do not deserve a chat notification.
+        if ((trip?.distance_km ?? Infinity) < config.tripMinKm) {
+          log(`trip skipped: ${trip?.distance_km}km below tripMinKm=${config.tripMinKm}`);
+          return;
+        }
+        // Drive close and address/position writes race each other. Re-query
+        // fresh and resolve missing road labels via AMap (read-only, stored
+        // in this tool's own cache) under an explicit time budget — the card
+        // always goes out when the budget is spent.
+        const deadline = Date.now() + 20_000;
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 15_000));
+          trip = await getDriveGroup(segmentIds) || trip;
+          await applyAddressLabels(trip);
+          if (trip?.start_road || trip?.end_road) break;
+          if (Date.now() >= deadline) break;
+        }
+      } catch (error) {
+        log(`address label resolve failed (trip card continues): ${error.message}`);
+      }
+      await sendCompletedTrip(chatId, trip ? { ...event, trip } : event, key);
+      log(`trip notification sent segments=${segmentIds.length}`);
     }
   });
   checkTripDatabase = async () => {
@@ -251,7 +276,7 @@ async function startChargingMonitor() {
 }
 
 async function boot() {
-  log(`worker starting profile=${config.larkProfile} ocr=apple-vision k3Fallback=${config.kimiFallbackEnabled ? config.kimiModel : "off"}`);
+  log(`worker starting profile=${config.larkProfile} ocr=${config.ocrBackend} k3Fallback=${config.kimiFallbackEnabled ? config.kimiModel : "off"}`);
   await refreshReferenceFuelPrices()
     .then((reference) => log(`fuel reference ready date=${reference.display_date} current=${reference.is_current_day}`))
     .catch((error) => log(`fuel reference refresh failed: ${error.message}`));

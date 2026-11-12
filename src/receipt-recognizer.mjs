@@ -35,7 +35,7 @@ function matchNumber(observations, pattern) {
 
 function matchTime(observations) {
   for (const item of observations) {
-    const ended = String(item.text || "").match(/结束时间\s*[:：]?\s*20\d{2}-\d{1,2}-\d{1,2}\s+(\d{1,2}:\d{2}(?::\d{2})?)/);
+    const ended = String(item.text || "").match(/结束时间\s*[:：]?\s*20\d{2}-\d{1,2}-\d{1,2}\s*(\d{1,2}:\d{2}(?::\d{2})?)/);
     if (ended) return { value: ended[1], confidence: item.confidence };
     const range = String(item.text || "").match(/(\d{1,2}:\d{2})\s*[~～—–-]\s*(\d{1,2}:\d{2})/);
     if (range) return { value: range[2], confidence: item.confidence };
@@ -108,7 +108,7 @@ export function parseVisionReceipt(rawObservations) {
     charged_at: chargedAt.value,
     provider: null,
     confidence: null
-  }, "apple_vision");
+  }, config.ocrBackend === "rapidocr" ? "rapidocr" : "apple_vision");
   let completeness = 0;
   if (draft.amount_cny !== null) completeness += 0.35;
   if (draft.energy_kwh !== null) completeness += 0.25;
@@ -141,7 +141,7 @@ export async function analyzeChargingReceipt(filePath, options = {}) {
     return local;
   } catch (error) {
     if (options.allowPartial) {
-      return { ...(partial || normalizeReceiptResult({}, "apple_vision")),
+      return { ...(partial || normalizeReceiptResult({}, config.ocrBackend === "rapidocr" ? "rapidocr" : "apple_vision")),
         draft_issue: error.code === "RECEIPT_IMAGE_UNSAFE"
           ? "图片可能包含多笔订单或尚未支付，不能可靠提取单笔账单。请用文字提供单笔已支付金额和电量。"
           : "部分字段未能可靠识别，请补充或纠正后确认。" };
